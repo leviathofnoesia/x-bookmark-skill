@@ -130,7 +130,7 @@ X API uses **pay-per-use pricing** (no subscriptions):
 | Search | $0.50 per page |
 
 The CLI displays estimated cost after each operation:
-```
+```text
 📊 3 API requests · est. cost ~$0.51
 ```
 

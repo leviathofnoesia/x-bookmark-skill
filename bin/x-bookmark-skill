@@ -168,7 +168,7 @@ async function cmdSkills() {
   if (jsonFlag) {
     console.log(format.formatSkillsJson(skills));
   } else if (treeFlag) {
-    console.log(format.formatSkillsTelegram(skills));
+    console.log(format.formatSkillsTree(skills));
   } else {
     console.log(format.formatSkillsTelegram(skills));
   }
@@ -1028,7 +1028,14 @@ async function main() {
       break;
     case "skills":
     case "skill":
-      if (command === "skills") {
+    case "skills":
+      // Check for management subcommands
+      const skillSubcommand = args[1];
+      const managementVerbs = ["tag", "ignore", "name", "list", "clear"];
+      if (skillSubcommand && (managementVerbs.includes(skillSubcommand) || 
+          skillSubcommand === "add" || skillSubcommand === "remove" || skillSubcommand === "rm")) {
+        cmdSkillManage();
+      } else if (command === "skills") {
         await cmdSkills();
       } else {
         await cmdSkill();
@@ -1064,12 +1071,7 @@ async function main() {
     case "--help":
     case "-h":
     default:
-      // Check for skill management subcommand
-      if (command === "skill" && args[1]) {
-        cmdSkillManage();
-      } else {
-        usage();
-      }
+      usage();
   }
 }
 

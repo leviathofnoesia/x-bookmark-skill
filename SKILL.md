@@ -198,7 +198,7 @@ x-bookmark-skill serve
 
 ## REST API
 
-```
+```text
 GET  /api/health                       Health check
 GET  /api/skills                       List skills
      ?level=Expert                     Filter by level
@@ -242,7 +242,7 @@ X API uses **pay-per-use pricing** (no subscriptions):
 | Search | $0.50 per page |
 
 The CLI displays estimated cost after each operation:
-```
+```text
 📊 3 API requests · est. cost ~$0.51
 ```
 
@@ -280,7 +280,7 @@ to x-research-skill for real-time intelligence:
 ```
 
 **Agent workflow:**
-```
+```text
 1. x-bookmark-skill export → "User knows ML (Expert)"
 2. Agent takes suggested_queries → x-research-skill → "Latest in ML"
 ```

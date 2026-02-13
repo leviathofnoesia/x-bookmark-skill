@@ -78,6 +78,55 @@ export function formatSkillsTelegram(skills: Skill[]): string {
   return out;
 }
 
+/**
+ * Format skills as a tree view showing hierarchy.
+ */
+export function formatSkillsTree(skills: Skill[]): string {
+  if (skills.length === 0) {
+    return "No skills found. Import bookmarks first.";
+  }
+
+  // Build skill map for quick lookup
+  const skillMap = new Map<string, Skill>();
+  for (const s of skills) {
+    skillMap.set(s.id, s);
+  }
+
+  // Find root skills (no parent)
+  const roots = skills.filter((s) => !s.parentSkillId);
+
+  let out = "🎯 Skill Profile (tree view)\n\n";
+
+  function formatSkillTree(skill: Skill, indent: string, isLast: boolean): void {
+    const prefix = isLast ? "└── " : "├── ";
+    const connector = isLast ? "    " : "│   ";
+    
+    out += `${indent}${prefix}${levelEmoji(skill.level)} ${skill.name} (${skill.score})\n`;
+    
+    // Show child skills
+    const children = skills.filter((s) => s.parentSkillId === skill.id);
+    for (let i = 0; i < children.length; i++) {
+      formatSkillTree(children[i], indent + connector, i === children.length - 1);
+    }
+  }
+
+  // Format each root skill with its children
+  for (let i = 0; i < roots.length; i++) {
+    formatSkillTree(roots[i], "", i === roots.length - 1);
+  }
+
+  // Also show skills without hierarchy at the end
+  const orphans = skills.filter((s) => !s.parentSkillId && s.childSkillIds.length === 0);
+  if (orphans.length > roots.length) {
+    out += "\n📌 Standalone Skills:\n";
+    for (const s of orphans) {
+      out += `  ${levelEmoji(s.level)} ${s.name} (${s.score})\n`;
+    }
+  }
+
+  return out;
+}
+
 export function formatSkillDetail(skill: Skill): string {
   let out = `📊 ${skill.name}\n`;
   out += `─`.repeat(40) + "\n";

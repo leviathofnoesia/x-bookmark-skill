@@ -88,8 +88,9 @@ export function getAllCustomTags(): Record<string, string[]> {
 // Add ignored keyword
 export function addIgnoredKeyword(keyword: string): void {
   const m = loadManager();
-  if (!m.ignoredKeywords.includes(keyword)) {
-    m.ignoredKeywords.push(keyword.toLowerCase());
+  const k = keyword.toLowerCase();
+  if (!m.ignoredKeywords.includes(k)) {
+    m.ignoredKeywords.push(k);
     saveManager(m);
   }
 }

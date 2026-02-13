@@ -3,7 +3,8 @@
  * Adapted from x-research-skill pattern.
  * 
  * Cost tracking: X API uses pay-per-use pricing.
- * Bookmark read: $0.005 per request
+ * Bookmark read: $0.005 per tweet
+ * Search: $0.50 per page
  */
 
 import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
@@ -158,7 +159,7 @@ async function apiGet(url: string, cost: number = 0): Promise<RawResponse> {
  * Costs $0.010 per user lookup.
  */
 export async function getCurrentUser(): Promise<{ id: string; username: string; name: string }> {
-  const url = `${BASE}/2/users/me?${USER_FIELDS}`;
+  const url = `${BASE}/users/me?${USER_FIELDS}`;
   const raw = await apiGet(url, COST_PER_USER_LOOKUP);
   
   if (!raw.data || Array.isArray(raw.data)) {
@@ -245,6 +246,7 @@ interface CacheEntry {
   query: string;
   params: string;
   timestamp: number;
+  ttl: number;  // TTL used when caching (for quick mode vs default)
   tweets: Tweet[];
 }
 
@@ -267,7 +269,9 @@ export function getCachedSearch(query: string, params: string = "", ttlMs: numbe
   if (!existsSync(path)) return null;
   try {
     const entry: CacheEntry = JSON.parse(readFileSync(path, "utf-8"));
-    if (Date.now() - entry.timestamp > ttlMs) {
+    // Use the stored TTL if available, otherwise fall back to provided ttlMs
+    const effectiveTtl = entry.ttl || ttlMs;
+    if (Date.now() - entry.timestamp > effectiveTtl) {
       unlinkSync(path);
       return null;
     }
@@ -277,11 +281,11 @@ export function getCachedSearch(query: string, params: string = "", ttlMs: numbe
   }
 }
 
-export function setCachedSearch(query: string, params: string = "", tweets: Tweet[]): void {
+export function setCachedSearch(query: string, params: string = "", tweets: Tweet[], ttlMs: number = DEFAULT_TTL_MS): void {
   ensureCacheDir();
   const key = cacheKey(query, params);
   const path = join(CACHE_DIR, `${key}.json`);
-  const entry: CacheEntry = { query, params, timestamp: Date.now(), tweets };
+  const entry: CacheEntry = { query, params, timestamp: Date.now(), ttl: ttlMs, tweets };
   writeFileSync(path, JSON.stringify(entry, null, 2));
 }
 
@@ -322,14 +326,13 @@ export async function searchTweets(
   const encoded = encodeURIComponent(query);
   const ttlMs = opts.quick ? QUICK_TTL_MS : DEFAULT_TTL_MS;
 
-  let timeFilter = "";
-  if (opts.since) {
-    const startTime = parseSince(opts.since);
-    if (startTime) timeFilter = `&start_time=${startTime}`;
-  }
+  // Derive startTime once for consistent use in both API call and cache key
+  const startTime = opts.since ? parseSince(opts.since) : null;
+  const timeFilter = startTime ? `&start_time=${startTime}` : "";
 
-  // Check cache
-  const cacheParams = `sort=${sort}&pages=${pages}&since=${opts.since || "7d"}&quick=${opts.quick || false}`;
+  // Check cache - use the actual ISO timestamp in cache key for accuracy
+  const cacheSince = startTime || "7d";
+  const cacheParams = `sort=${sort}&pages=${pages}&since=${cacheSince}&quick=${opts.quick || false}`;
   const cached = getCachedSearch(query, cacheParams, ttlMs);
   
   let allTweets: Tweet[] = cached || [];
@@ -350,7 +353,7 @@ export async function searchTweets(
     }
     
     // Cache results
-    setCachedSearch(query, cacheParams, allTweets);
+    setCachedSearch(query, cacheParams, allTweets, ttlMs);
   }
 
   // Post-filter: min likes
@@ -391,7 +394,9 @@ export function pruneCache(): number {
     for (const file of files) {
       try {
         const entry: CacheEntry = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf-8'));
-        if (now - entry.timestamp > DEFAULT_TTL_MS) {
+        // Use stored TTL if available, otherwise fall back to DEFAULT_TTL_MS
+        const effectiveTtl = entry.ttl || DEFAULT_TTL_MS;
+        if (now - entry.timestamp > effectiveTtl) {
           unlinkSync(join(CACHE_DIR, file));
           count++;
         }

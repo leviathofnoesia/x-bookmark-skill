@@ -158,7 +158,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
   // Generate capability tags from top keywords
   const capabilityTags = generateCapabilityTags(topKeywords);
   
-  // Generate suggested queries for research
+  // Generate suggested queries for research (with dynamic year)
   const suggestedQueries = generateSuggestedQueries(topKeywords, cluster.name);
   
   // Build description
@@ -328,6 +328,57 @@ function generateDescription(
 ): string {
   const topKw = keywords.slice(0, 3).join(", ");
   return `${name} expertise inferred from ${count} bookmarked tweets. Key topics: ${topKw}`;
+}
+
+/**
+ * Get current year for dynamic query generation.
+ */
+function getCurrentYear(): number {
+  return new Date().getFullYear();
+}
+
+/**
+ * Generate research-ready suggested queries from keywords.
+ * Uses dynamic year instead of hardcoded value.
+ */
+function generateSuggestedQueries(keywords: string[], name: string): string[] {
+  const queries: string[] = [];
+  const seen = new Set<string>();
+  const currentYear = getCurrentYear();
+  
+  // Take top 3 keywords as base queries
+  const topKeywords = keywords.slice(0, 3);
+  
+  for (const kw of topKeywords) {
+    // Basic keyword query
+    if (!seen.has(kw)) {
+      queries.push(kw);
+      seen.add(kw);
+    }
+    
+    // Add year-qualified query (current year context)
+    const yearQuery = `${kw} ${currentYear}`;
+    if (!seen.has(yearQuery)) {
+      queries.push(yearQuery);
+      seen.add(yearQuery);
+    }
+  }
+  
+  // Add a few compound queries from combinations
+  if (topKeywords.length >= 2) {
+    const compound1 = `${topKeywords[0]} ${topKeywords[1]}`;
+    if (!seen.has(compound1)) {
+      queries.push(compound1);
+    }
+  }
+  
+  // Add "best practices" query for the main skill area
+  const bestPractices = `${name} best practices`;
+  if (!seen.has(bestPractices)) {
+    queries.push(bestPractices);
+  }
+  
+  return queries.slice(0, 5);  // Max 5 queries
 }
 
 // ============ Feature 2: Evidence Quality ============
