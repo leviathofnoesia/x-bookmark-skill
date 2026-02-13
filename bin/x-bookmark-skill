@@ -18,6 +18,20 @@ import * as api from "../lib/api.js";
 import * as cluster from "../lib/cluster.js";
 import * as skill from "../lib/skill.js";
 import * as format from "../lib/format.js";
+
+// Stopwords for gap analysis keyword extraction
+const STOPWORDS = new Set([
+  "about", "above", "after", "again", "being", "below", "between", "both",
+  "could", "doing", "down", "during", "each", "few", "first", "from", "further",
+  "had", "having", "here", "how", "into", "just", "more", "most", "other", "out",
+  "over", "said", "same", "should", "some", "such", "than", "that", "their", "them",
+  "then", "there", "these", "they", "this", "those", "through", "too", "under",
+  "until", "upon", "very", "were", "what", "when", "where", "which", "while", "who",
+  "with", "would", "your", "like", "get", "got", "can", "will", "one", "also", "new",
+  "use", "using", "used", "make", "making", "made", "see", "seen", "know", "think",
+  "want", "come", "take", "back", "give", "way", "look", "need", "even", "well",
+  "still", "going", "say", "says", "said", "thing", "things", "people", "time",
+]);
 import * as manager from "../lib/manager.js";
 
 // Ensure data directory exists
@@ -346,6 +360,7 @@ async function cmdBrief() {
   const levelFilter = getOpt("level");
   const save = getFlag("save");
   const update = getFlag("update");  // Phase 3: Update skill with research
+  const gapsFlag = getFlag("gaps");  // Feature 1: Gap analysis
   const jsonFlag = getFlag("json");
   const limit = parseInt(getOpt("limit") || "10");  // tweets per query
   
@@ -385,6 +400,7 @@ async function cmdBrief() {
     // Use suggested queries for research
     const queries = s.suggestedQueries?.slice(0, 3) || s.topKeywords.slice(0, 3);
     const allFindings: any[] = [];
+    const allTrendingKeywords = new Set<string>();
     
     // Run searches for each query
     for (const query of queries) {
@@ -397,6 +413,21 @@ async function cmdBrief() {
         });
         
         const usage = api.getUsage();
+        
+        // Extract trending keywords from search results
+        for (const t of tweets) {
+          // Extract hashtags
+          for (const tag of t.hashtags || []) {
+            allTrendingKeywords.add(tag.toLowerCase());
+          }
+          // Extract keywords from text (simple tokenization)
+          const words = t.text.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+          for (const w of words.slice(0, 10)) {
+            if (!STOPWORDS.has(w) && /^[a-z0-9]+$/.test(w)) {
+              allTrendingKeywords.add(w);
+            }
+          }
+        }
         
         if (tweets.length > 0) {
           allFindings.push({
@@ -416,11 +447,24 @@ async function cmdBrief() {
       }
     }
     
+    // Feature 1: Gap Analysis
+    let gaps: string[] = [];
+    if (gapsFlag && allTrendingKeywords.size > 0) {
+      const userKeywords = new Set(s.topKeywords.map(k => k.toLowerCase()));
+      for (const trending of allTrendingKeywords) {
+        if (!userKeywords.has(trending) && trending.length > 3) {
+          gaps.push(trending);
+        }
+      }
+      gaps = gaps.slice(0, 10);  // Top 10 gaps
+    }
+    
     // Build briefing object
-    const briefing = {
+    const briefing: any = {
       skill: s.name,
       level: s.level,
       score: s.score,
+      evidenceQuality: s.evidenceQuality,
       bookmarkCount: s.bookmarkCount,
       authors: s.authors.length,
       domains: s.topDomains,
@@ -430,6 +474,21 @@ async function cmdBrief() {
       researchFindings: allFindings,
       generatedAt: new Date().toISOString(),
     };
+    
+    // Add gaps if requested
+    if (gapsFlag) {
+      briefing.gaps = gaps;
+      briefing.gapAnalysis = {
+        userTopics: s.topKeywords,
+        trendingTopics: [...allTrendingKeywords].slice(0, 20),
+        missing: gaps,
+      };
+    }
+    
+    // Add actionable if available
+    if (s.actionable) {
+      briefing.actionable = s.actionable;
+    }
     
     briefings.push(briefing);
   }
@@ -487,6 +546,7 @@ function formatBriefingMarkdown(briefing: any, forFile: boolean = false): string
   let md = forFile ? "" : `\n${"=".repeat(50)}\n\n`;
   md += `## ${levelEmoji[briefing.level] || ""} ${briefing.skill} Briefing\n\n`;
   md += `**Your Expertise:** ${briefing.level} (score: ${briefing.score})\n`;
+  md += `**Evidence Quality:** ${getQualityLabel(briefing.evidenceQuality)}\n`;
   md += `**Bookmarks:** ${briefing.bookmarkCount} tweets, ${briefing.authors} authors, ${briefing.domains?.length || 0} domains\n`;
   md += `**Latest Bookmark:** ${briefing.latestBookmark}\n\n`;
   
@@ -496,12 +556,63 @@ function formatBriefingMarkdown(briefing: any, forFile: boolean = false): string
   }
   md += "\n";
   
+  // Feature 1: Gap Analysis
+  if (briefing.gaps && briefing.gaps.length > 0) {
+    md += `### 🎯 Gap Analysis (Trending but Missing)\n`;
+    md += `*Topics trending on X that aren't in your bookmarks*\n\n`;
+    for (const gap of briefing.gaps.slice(0, 10)) {
+      md += `- ${gap}\n`;
+    }
+    md += "\n";
+  }
+  
   md += `### 🔍 Suggested Research Queries\n`;
   md += `*Use these with x-research-skill for latest developments*\n\n`;
   for (const q of briefing.suggestedQueries || []) {
     md += `- \`${q}\`\n`;
   }
   md += "\n";
+  
+  // Feature 3: Actionable Content
+  if (briefing.actionable) {
+    const { repos, tools, docs, posts, jobs } = briefing.actionable;
+    
+    if (repos?.length > 0) {
+      md += `### 🐙 Repositories (${repos.length})\n`;
+      md += `*You can clone and test*\n\n`;
+      for (const r of repos.slice(0, 5)) {
+        md += `- [${r.title.slice(0, 50)}](${r.url}) - ${r.action}\n`;
+      }
+      md += "\n";
+    }
+    
+    if (tools?.length > 0) {
+      md += `### 🛠️ Tools (${tools.length})\n`;
+      md += `*You can evaluate*\n\n`;
+      for (const t of tools.slice(0, 5)) {
+        md += `- [${t.title.slice(0, 50)}](${t.url}) - ${t.action}\n`;
+      }
+      md += "\n";
+    }
+    
+    if (docs?.length > 0) {
+      md += `### 📖 Documentation (${docs.length})\n`;
+      md += `*You can read and learn*\n\n`;
+      for (const d of docs.slice(0, 5)) {
+        md += `- [${d.title.slice(0, 50)}](${d.url})\n`;
+      }
+      md += "\n";
+    }
+    
+    if (jobs?.length > 0) {
+      md += `### 💼 Opportunities (${jobs.length})\n`;
+      md += `*You can apply or explore*\n\n`;
+      for (const j of jobs.slice(0, 5)) {
+        md += `- [${j.title.slice(0, 50)}](${j.url})\n`;
+      }
+      md += "\n";
+    }
+  }
   
   if (briefing.researchFindings && briefing.researchFindings.length > 0) {
     md += `### 📡 Latest Developments (X Search)\n`;
@@ -517,6 +628,12 @@ function formatBriefingMarkdown(briefing: any, forFile: boolean = false): string
   }
   
   return md;
+}
+
+function getQualityLabel(quality: number): string {
+  if (quality >= 0.7) return "⭐ High";
+  if (quality >= 0.4) return "📎 Medium";
+  return "⚠️ Low";
 }
 
 // ============ Phase 3: Skill Management ============
@@ -856,6 +973,7 @@ Commands:
     --all                         Generate for all skills
     --level Expert                 Generate for specific level
     --limit N                     Tweets per query (default: 10)
+    --gaps                        Show gap analysis (trending vs bookmarked)
     --save                        Save to ~/clawd/drafts/
     --update                      Update skills with research metadata
     --json                        JSON output

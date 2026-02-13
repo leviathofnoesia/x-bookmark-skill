@@ -122,12 +122,14 @@ export interface AgentCompilerSkill {
   level: SkillLevel;
   confidence: number;
   score: number;
+  evidence_quality: number;  // Average evidence quality score (0-1)
   evidence: {
     url: string;
     title: string;
     author: string;
     domain: string;
     relevance: number;
+    quality: number;
   }[];
   capability_tags: string[];
   keywords: string[];
@@ -142,6 +144,14 @@ export interface AgentCompilerSkill {
   date_range: {
     earliest: string;
     latest: string;
+  };
+  // Feature 3: Actionable content
+  actionable?: {
+    repos: { url: string; title: string; action: string; domain: string }[];
+    tools: { url: string; title: string; action: string; domain: string }[];
+    docs: { url: string; title: string; action: string; domain: string }[];
+    posts: { url: string; title: string; action: string; domain: string }[];
+    jobs: { url: string; title: string; action: string; domain: string }[];
   };
   // Phase 3: Research metadata
   last_researched?: string;
@@ -170,12 +180,14 @@ export function formatAgentCompiler(skills: Skill[], bookmarkCount: number): Age
       level: skill.level,
       confidence: skill.confidence,
       score: skill.score,
+      evidence_quality: skill.evidenceQuality,
       evidence: skill.evidence.map((e) => ({
         url: e.url,
         title: e.title,
         author: e.author,
         domain: e.domain,
         relevance: e.relevance,
+        quality: e.quality,
       })),
       capability_tags: skill.capabilityTags,
       keywords: skill.topKeywords,
@@ -191,6 +203,8 @@ export function formatAgentCompiler(skills: Skill[], bookmarkCount: number): Age
         earliest: new Date(skill.dateRange.earliest).toISOString(),
         latest: new Date(skill.dateRange.latest).toISOString(),
       },
+      // Feature 3: Actionable content
+      actionable: skill.actionable,
       // Phase 3: Research metadata
       last_researched: skill.lastResearched ? new Date(skill.lastResearched).toISOString() : undefined,
       research_discovered: skill.researchDiscovered,

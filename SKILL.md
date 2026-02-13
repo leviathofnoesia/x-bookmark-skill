@@ -87,6 +87,50 @@ Generate skill briefings combining expertise with research:
 x-bookmark-skill brief <skill-name>
   --all                         # Generate for all skills
   --level Expert                # Generate for specific level
+  --gaps                        # Show gap analysis (trending vs bookmarked)
+  --limit N                     # Tweets per query (default: 10)
+  --save                        # Save to ~/clawd/drafts/
+  --json                        # JSON output
+```
+
+### Evidence Quality
+
+Each skill now includes an **evidence quality score** (0-1) based on:
+- Source credibility (GitHub, arxiv.org, docs → high; social media → low)
+- Author diversity (multiple experts → higher)
+- Domain diversity (multiple sources → higher)
+- Content substance (longer titles → more detailed)
+
+**Quality Tiers:**
+| Tier | Score | Meaning |
+|------|-------|---------|
+| ⭐ High | 0.7-1.0 | Multiple credible sources |
+| 📎 Medium | 0.4-0.7 | Mix of sources |
+| ⚠️ Low | 0-0.4 | Limited variety |
+
+### Gap Analysis
+
+Shows what's trending in a skill area that you're not engaging with:
+
+```bash
+x-bookmark-skill brief "machine learning" --gaps
+```
+
+**Output:**
+- Topics in your bookmarks
+- Trending topics from X search
+- "Missing" list: trending but not in your bookmarks
+
+### Actionable Content
+
+Skills now include **actionable items** agents can act on:
+
+| Type | Example | Action |
+|------|---------|--------|
+| 🐙 Repos | GitHub repos | clone/test |
+| 🛠️ Tools | NPM packages, Docker | install/evaluate |
+| 📖 Docs | Documentation | read/learn |
+| 💼 Opportunities | Job postings | apply/explore |
   --limit N                     # Tweets per query (default: 10)
   --save                        # Save to ~/clawd/drafts/
   --update                      # Update skills with research metadata
@@ -260,11 +304,17 @@ x-bookmark-skill brief "machine learning" --save
 
 # JSON output
 x-bookmark-skill brief "machine learning" --json
+
+# With gap analysis
+x-bookmark-skill brief "machine learning" --gaps
 ```
 
 **Briefing includes:**
 - Your expertise level and score
+- Evidence quality score
 - Topics from your bookmarks
+- Gap analysis (trending vs bookmarked) - with `--gaps`
+- Actionable content (repos, tools, docs, jobs)
 - Suggested research queries (for x-research-skill)
 - Latest developments from X search
 
@@ -356,6 +406,7 @@ x-bookmark-skill import --count 200 --quality
       "level": "Specialist",
       "confidence": 0.72,
       "score": 58,
+      "evidence_quality": 0.75,
       "capability_tags": ["machine learning", "ml", "ai"],
       "keywords": ["machine learning", "deep learning", "neural networks"],
       "suggested_queries": [
@@ -370,9 +421,19 @@ x-bookmark-skill import --count 200 --quality
           "title": "tweet text...",
           "author": "username",
           "domain": "arxiv.org",
-          "relevance": 0.9
+          "relevance": 0.9,
+          "quality": 0.8
         }
       ],
+      "actionable": {
+        "repos": [
+          { "url": "https://github.com/...", "title": "repo name", "action": "clone/test", "domain": "github.com" }
+        ],
+        "tools": [],
+        "docs": [],
+        "posts": [],
+        "jobs": []
+      },
       "bookmark_count": 34,
       "authors": ["@person1", "@person2"],
       "domains": ["arxiv.org", "github.com"],

@@ -15,6 +15,7 @@ export interface Skill {
   level: SkillLevel;
   score: number;
   confidence: number;
+  evidenceQuality: number;  // Average quality of evidence (0-1)
   bookmarkCount: number;
   evidence: SkillEvidence[];
   parentSkillId?: string;
@@ -33,9 +34,24 @@ export interface Skill {
   lastResearched?: number;
   researchDiscovered?: string[];
   researchCount?: number;
+  // Feature 3: Actionable content
+  actionable?: {
+    repos: ActionableItem[];
+    tools: ActionableItem[];
+    docs: ActionableItem[];
+    posts: ActionableItem[];
+    jobs: ActionableItem[];
+  };
   createdAt: number;
   updatedAt: number;
   version: number;
+}
+
+export interface ActionableItem {
+  url: string;
+  title: string;
+  action: string;
+  domain: string;
 }
 
 export interface SkillEvidence {
@@ -46,6 +62,7 @@ export interface SkillEvidence {
   domain: string;
   addedAt: number;
   relevance: number;
+  quality: number;  // Evidence quality score (0-1)
 }
 
 export interface SkillScore {
@@ -74,7 +91,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
   
   const scoreResult = calculateSkillScore(cluster, clusterBookmarks);
   
-  // Build evidence from bookmarks
+  // Build evidence from bookmarks (with quality score)
   const evidence: SkillEvidence[] = clusterBookmarks.map((b) => {
     const topicSet = new Set(b.topics.all);
     const relevance = [...cluster.keywords].filter((k) => topicSet.has(k)).length /
@@ -88,8 +105,22 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
       domain: b.tweet.urls[0] ? new URL(b.tweet.urls[0]).hostname : "x.com",
       addedAt: b.savedAt,
       relevance,
+      quality: 0.5,  // Will be calculated after all evidence is built
     };
   });
+  
+  // Calculate evidence quality (needs all authors/domains)
+  const authorSet = new Set(evidence.map(e => e.author));
+  const domainSet = new Set(evidence.map(e => e.domain));
+  const evidenceQuality = calculateEvidenceQuality(evidence, [...authorSet], [...domainSet]);
+  
+  // Update individual evidence quality scores
+  for (const e of evidence) {
+    e.quality = calculateEvidenceItemQuality(e, authorSet, domainSet);
+  }
+  
+  // Extract actionable content
+  const actionable = extractActionable(evidence);
   
   // Sort evidence by relevance
   evidence.sort((a, b) => b.relevance - a.relevance);
@@ -141,6 +172,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
     level: scoreResult.level,
     score: scoreResult.score,
     confidence: scoreResult.confidence,
+    evidenceQuality,
     bookmarkCount: cluster.bookmarkIds.length,
     evidence: evidence.slice(0, 20),
     childSkillIds: [],
@@ -151,6 +183,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
     suggestedQueries,
     authors: [...cluster.authors],
     dateRange,
+    actionable,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     version: 1,
@@ -295,6 +328,182 @@ function generateDescription(
 ): string {
   const topKw = keywords.slice(0, 3).join(", ");
   return `${name} expertise inferred from ${count} bookmarked tweets. Key topics: ${topKw}`;
+}
+
+// ============ Feature 2: Evidence Quality ============
+
+/**
+ * Calculate quality score for a single evidence item.
+ * Factors: engagement, author diversity, source domain, recency.
+ */
+function calculateEvidenceItemQuality(
+  evidence: SkillEvidence,
+  allAuthors: Set<string>,
+  allDomains: Set<string>
+): number {
+  let quality = 0;
+  
+  // Engagement score (0-0.4): Based on title length as proxy for substance
+  // Real engagement would need API calls - use title quality as proxy
+  const titleLength = evidence.title.length;
+  if (titleLength > 100) quality += 0.2;  // Detailed content
+  else if (titleLength > 50) quality += 0.1;
+  
+  // Source domain credibility (0-0.3)
+  const credibleDomains = ['github.com', 'arxiv.org', 'medium.com', 'dev.to', 
+    'stackoverflow.com', 'docs.', 'documentation', 'blog.', 'news.', 'tech.', 'youtube.com'];
+  const domain = evidence.domain.toLowerCase();
+  if (credibleDomains.some(d => domain.includes(d))) {
+    quality += 0.3;
+  } else if (domain === 'x.com' || domain === 'twitter.com') {
+    quality += 0.1;  // Social media - lower credibility
+  } else {
+    quality += 0.15;
+  }
+  
+  // Author diversity contribution (0-0.2)
+  if (allAuthors.size >= 3) quality += 0.2;
+  else if (allAuthors.size >= 2) quality += 0.1;
+  
+  // Domain diversity (0-0.1)
+  if (allDomains.size >= 3) quality += 0.1;
+  
+  return Math.min(quality, 1);
+}
+
+/**
+ * Calculate overall evidence quality for a skill.
+ */
+function calculateEvidenceQuality(
+  evidence: SkillEvidence[],
+  authors: string[],
+  domains: string[]
+): number {
+  if (evidence.length === 0) return 0;
+  
+  const authorSet = new Set(authors);
+  const domainSet = new Set(domains);
+  
+  const totalQuality = evidence.reduce((sum, e) => 
+    sum + calculateEvidenceItemQuality(e, authorSet, domainSet), 0
+  );
+  
+  return Math.round((totalQuality / evidence.length) * 100) / 100;
+}
+
+// ============ Feature 3: Actionable Content ============
+
+const ACTIONABLE_DOMAINS: Record<string, string> = {
+  'github.com': 'repo',
+  'gitlab.com': 'repo',
+  'bitbucket.org': 'repo',
+  'npmjs.com': 'package',
+  'pypi.org': 'package',
+  'crates.io': 'package',
+  'hub.docker.com': 'docker',
+  'docker': 'docker',
+  'vercel.com': 'tool',
+  'netlify.com': 'tool',
+  'cloudflare.com': 'tool',
+  'aws.amazon.com': 'tool',
+  'cloud.google.com': 'tool',
+  'azure.microsoft.com': 'tool',
+  'heroku.com': 'tool',
+  'linear.app': 'tool',
+  'notion.so': 'tool',
+  'figma.com': 'tool',
+  'readme.io': 'docs',
+  'gitbook.io': 'docs',
+  'mkdocs.org': 'docs',
+  'readthedocs.org': 'docs',
+  'medium.com': 'post',
+  'dev.to': 'post',
+  'blog.': 'post',
+  'news.': 'post',
+  'substack.com': 'post',
+  'youtube.com': 'video',
+  'loom.com': 'video',
+  'linkedin.com': 'post',
+  'crunchbase.com': 'job',
+  'remoteok.com': 'job',
+  'weworkremotely.com': 'job',
+  'jobs.': 'job',
+  'careers.': 'job',
+};
+
+/**
+ * Extract actionable items from evidence.
+ */
+function extractActionable(evidence: SkillEvidence[]): Skill['actionable'] {
+  const actionable: Skill['actionable'] = {
+    repos: [],
+    tools: [],
+    docs: [],
+    posts: [],
+    jobs: [],
+  };
+  
+  const seen = new Set<string>();
+  
+  for (const e of evidence) {
+    if (!e.url || seen.has(e.url)) continue;
+    
+    const urlLower = e.url.toLowerCase();
+    let type: string = 'post';
+    
+    // Determine type
+    for (const [domain, action] of Object.entries(ACTIONABLE_DOMAINS)) {
+      if (urlLower.includes(domain)) {
+        type = action;
+        break;
+      }
+    }
+    
+    const item: ActionableItem = {
+      url: e.url,
+      title: e.title.slice(0, 100),
+      action: getActionText(type),
+      domain: e.domain,
+    };
+    
+    switch (type) {
+      case 'repo':
+        actionable.repos.push(item);
+        break;
+      case 'package':
+      case 'docker':
+        actionable.tools.push(item);
+        break;
+      case 'docs':
+        actionable.docs.push(item);
+        break;
+      case 'video':
+      case 'post':
+        actionable.posts.push(item);
+        break;
+      case 'job':
+        actionable.jobs.push(item);
+        break;
+    }
+    
+    seen.add(e.url);
+  }
+  
+  return actionable;
+}
+
+function getActionText(type: string): string {
+  switch (type) {
+    case 'repo': return 'clone/test';
+    case 'package': return 'install/evaluate';
+    case 'docker': return 'run/deploy';
+    case 'tool': return 'evaluate/integrate';
+    case 'docs': return 'read/learn';
+    case 'post': return 'review/understand';
+    case 'video': return 'watch/learn';
+    case 'job': return 'apply/explore';
+    default: return 'explore';
+  }
 }
 
 /**
