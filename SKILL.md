@@ -79,6 +79,20 @@ x-bookmark-skill deep-dive <skill-name>
   --json            # JSON output
 ```
 
+### Brief
+
+Generate skill briefings combining expertise with research:
+
+```bash
+x-bookmark-skill brief <skill-name>
+  --all                         # Generate for all skills
+  --level Expert                # Generate for specific level
+  --limit N                     # Tweets per query (default: 10)
+  --save                        # Save to ~/clawd/drafts/
+  --update                      # Update skills with research metadata
+  --json                        # JSON output
+```
+
 ### Skill Management
 
 Customize and refine skills:
@@ -204,6 +218,73 @@ Example:
 x-bookmark-skill deep-dive "machine learning" --save --quality
 ```
 
+## Suggested Queries (Phase 1)
+
+Each skill automatically generates **research-ready queries** that can be fed directly
+to x-research-skill for real-time intelligence:
+
+```json
+{
+  "skill": "Machine Learning",
+  "suggested_queries": [
+    "machine learning",
+    "machine learning 2024",
+    "machine learning deep learning",
+    "Machine Learning best practices"
+  ]
+}
+```
+
+**Agent workflow:**
+```
+1. x-bookmark-skill export → "User knows ML (Expert)"
+2. Agent takes suggested_queries → x-research-skill → "Latest in ML"
+```
+
+## Skill Briefings (Phase 2)
+
+Generate comprehensive briefings that combine your expertise with current developments:
+
+```bash
+# Briefing for a specific skill
+x-bookmark-skill brief "machine learning"
+
+# All skills
+x-bookmark-skill brief --all
+
+# Expert-level skills only
+x-bookmark-skill brief --level Expert
+
+# Save to drafts
+x-bookmark-skill brief "machine learning" --save
+
+# JSON output
+x-bookmark-skill brief "machine learning" --json
+```
+
+**Briefing includes:**
+- Your expertise level and score
+- Topics from your bookmarks
+- Suggested research queries (for x-research-skill)
+- Latest developments from X search
+
+## x-research-skill Integration
+
+x-bookmark-skill is designed to **complement** x-research-skill, not replace it:
+
+| Tool | Purpose | Agent Question |
+|------|---------|----------------|
+| **x-research-skill** | Real-time research on X | "What's happening now on X?" |
+| **x-bookmark-skill** | Extract expertise from bookmarks | "What does the user know?" |
+
+**Together:**
+1. x-bookmark-skill → "User knows ML (Expert), suggested_queries: [...]"
+2. Agent feeds queries to x-research-skill → "Latest ML developments"
+3. Agent synthesizes → "You know ML. Latest: [findings]"
+
+**No dependencies:** x-bookmark-skill uses its own X API calls but outputs
+queries that x-research-skill can consume directly.
+
 ## Skill Management
 
 Customize how skills are generated and displayed:
@@ -276,6 +357,13 @@ x-bookmark-skill import --count 200 --quality
       "confidence": 0.72,
       "score": 58,
       "capability_tags": ["machine learning", "ml", "ai"],
+      "keywords": ["machine learning", "deep learning", "neural networks"],
+      "suggested_queries": [
+        "machine learning",
+        "machine learning 2024",
+        "machine learning deep learning",
+        "Machine Learning best practices"
+      ],
       "evidence": [
         {
           "url": "https://x.com/...",
@@ -291,7 +379,6 @@ x-bookmark-skill import --count 200 --quality
       "parent_skill": "ai",
       "child_skills": ["deep learning", "nlp"],
       "related_skills": ["data science"],
-      "keywords": ["machine learning", "deep learning", "neural networks"],
       "date_range": {
         "earliest": "2023-06-01T00:00:00.000Z",
         "latest": "2024-01-15T00:00:00.000Z"
@@ -338,9 +425,22 @@ This tool provides **structured skill data** from X bookmarks:
 1. **Import** bookmarks: `import --count 200`
 2. **Filter quality**: `import --quality` or `import --min-likes 50`
 3. **Query** skills: `skills --level Expert`
-4. **Deep dive**: `deep-dive "machine learning"` to research a skill
-5. **Customize**: `skill tag`, `skill ignore`, `skill name`
+4. **Generate briefings**: `brief "machine learning"` or `brief --all`
+5. **Research with x-research-skill**: Use `suggested_queries` from export
 6. **Export** for agent: `export --format agent-compiler`
+
+**Agent workflow with x-research-skill:**
+
+```
+User: "What does my X say about my expertise, and what's new?"
+
+Agent:
+1. x-bookmark-skill export → User's skill profile
+2. For each skill, use suggested_queries:
+   - "machine learning" → x-research-skill → Latest ML developments
+   - "cryptocurrency" → x-research-skill → Latest crypto news
+3. Synthesize → "You know ML (Expert), Crypto (Specialist). Latest: [findings]"
+```
 
 The tool does NOT:
 - Make LLM calls

@@ -338,6 +338,187 @@ async function cmdDeepDive() {
   }
 }
 
+// ============ Phase 2: Skill Briefings ============
+
+async function cmdBrief() {
+  const skillName = args[1];
+  const allFlag = getFlag("all");
+  const levelFilter = getOpt("level");
+  const save = getFlag("save");
+  const update = getFlag("update");  // Phase 3: Update skill with research
+  const jsonFlag = getFlag("json");
+  const limit = parseInt(getOpt("limit") || "10");  // tweets per query
+  
+  // Get skills
+  let skills = await getSkills();
+  
+  // Filter by level if specified
+  if (levelFilter) {
+    skills = skills.filter(s => s.level.toLowerCase() === levelFilter.toLowerCase());
+  }
+  
+  // Filter by skill name if provided
+  let targetSkills: skill.Skill[] = [];
+  if (skillName) {
+    targetSkills = skills.filter(s => 
+      s.name.toLowerCase() === skillName.toLowerCase() ||
+      s.id.toLowerCase() === skillName.toLowerCase() ||
+      s.slug.toLowerCase() === skillName.toLowerCase()
+    );
+    if (targetSkills.length === 0) {
+      console.error(`Skill not found: ${skillName}`);
+      process.exit(1);
+    }
+  } else if (allFlag) {
+    targetSkills = skills;
+  } else {
+    console.error("Usage: x-bookmark-skill brief <skill-name> OR --all OR --level Expert");
+    process.exit(1);
+  }
+  
+  // Generate briefing for each skill
+  const briefings: any[] = [];
+  
+  for (const s of targetSkills) {
+    console.error(`\nGenerating briefing for: ${s.name}...`);
+    
+    // Use suggested queries for research
+    const queries = s.suggestedQueries?.slice(0, 3) || s.topKeywords.slice(0, 3);
+    const allFindings: any[] = [];
+    
+    // Run searches for each query
+    for (const query of queries) {
+      try {
+        api.resetUsage();
+        const tweets = await api.searchTweets(query, {
+          maxResults: limit,
+          quick: true,  // Use quick mode for efficiency
+          since: "30d",
+        });
+        
+        const usage = api.getUsage();
+        
+        if (tweets.length > 0) {
+          allFindings.push({
+            query,
+            tweets: tweets.slice(0, 5).map((t: api.Tweet) => ({
+              author: t.username,
+              text: t.text.slice(0, 200),
+              likes: t.metrics.likes,
+              url: t.tweet_url,
+            })),
+          });
+        }
+        
+        console.error(`  "${query}" → ${tweets.length} tweets (~$${usage.estimatedCost.toFixed(2)})`);
+      } catch (e: any) {
+        console.error(`  Error searching "${query}": ${e.message}`);
+      }
+    }
+    
+    // Build briefing object
+    const briefing = {
+      skill: s.name,
+      level: s.level,
+      score: s.score,
+      bookmarkCount: s.bookmarkCount,
+      authors: s.authors.length,
+      domains: s.topDomains,
+      topics: s.topKeywords.slice(0, 8),
+      suggestedQueries: s.suggestedQueries,
+      latestBookmark: new Date(s.dateRange.latest).toISOString().split("T")[0],
+      researchFindings: allFindings,
+      generatedAt: new Date().toISOString(),
+    };
+    
+    briefings.push(briefing);
+  }
+  
+  // Output
+  if (jsonFlag) {
+    console.log(JSON.stringify(briefings, null, 2));
+  } else {
+    // Format as markdown
+    for (const b of briefings) {
+      console.log(formatBriefingMarkdown(b));
+    }
+  }
+  
+  // Save to drafts
+  if (save) {
+    const draftsDir = join(process.env.HOME || "", "clawd", "drafts");
+    if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true });
+    
+    const date = new Date().toISOString().split("T")[0];
+    const slug = targetSkills.length === 1 
+      ? targetSkills[0].name.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+      : "all-skills";
+    const path = join(draftsDir, `skill-briefing-${slug}-${date}.md`);
+    
+    let md = "# Skill Briefings\n\n";
+    md += `*Generated: ${new Date().toISOString()}*\n\n---\n\n`;
+    
+    for (const b of briefings) {
+      md += formatBriefingMarkdown(b, true);
+      md += "\n\n---\n\n";
+    }
+    
+    writeFileSync(path, md);
+    console.error(`\nSaved to ${path}`);
+  }
+  
+  // Phase 3: Update skills with research metadata
+  if (update) {
+    console.error("\n📝 Updating skills with research metadata...");
+    // This would update the skills.json with lastResearched, etc.
+    // For now, just note it
+    console.error("(Phase 3: Research sync not yet implemented)");
+  }
+}
+
+function formatBriefingMarkdown(briefing: any, forFile: boolean = false): string {
+  const levelEmoji: Record<string, string> = {
+    Expert: "🧠",
+    Specialist: "💡",
+    Practitioner: "📚",
+    Novice: "🌱",
+  };
+  
+  let md = forFile ? "" : `\n${"=".repeat(50)}\n\n`;
+  md += `## ${levelEmoji[briefing.level] || ""} ${briefing.skill} Briefing\n\n`;
+  md += `**Your Expertise:** ${briefing.level} (score: ${briefing.score})\n`;
+  md += `**Bookmarks:** ${briefing.bookmarkCount} tweets, ${briefing.authors} authors, ${briefing.domains?.length || 0} domains\n`;
+  md += `**Latest Bookmark:** ${briefing.latestBookmark}\n\n`;
+  
+  md += `### 📚 Topics in Your Bookmarks\n`;
+  for (const topic of briefing.topics.slice(0, 8)) {
+    md += `- ${topic}\n`;
+  }
+  md += "\n";
+  
+  md += `### 🔍 Suggested Research Queries\n`;
+  md += `*Use these with x-research-skill for latest developments*\n\n`;
+  for (const q of briefing.suggestedQueries || []) {
+    md += `- \`${q}\`\n`;
+  }
+  md += "\n";
+  
+  if (briefing.researchFindings && briefing.researchFindings.length > 0) {
+    md += `### 📡 Latest Developments (X Search)\n`;
+    
+    for (const finding of briefing.researchFindings) {
+      md += `\n**Query:** "${finding.query}"\n`;
+      for (const t of finding.tweets.slice(0, 3)) {
+        const text = t.text.length > 100 ? t.text.slice(0, 97) + "..." : t.text;
+        md += `- @${t.author}: "${text}" (❤️ ${t.likes})\n`;
+      }
+    }
+    md += "\n";
+  }
+  
+  return md;
+}
+
 // ============ Phase 3: Skill Management ============
 
 function cmdSkillManage() {
@@ -671,6 +852,14 @@ Commands:
     --save                        Save to ~/clawd/drafts/
     --json                        JSON output
   
+  brief <skill-name>              Generate skill briefing (expertise + research)
+    --all                         Generate for all skills
+    --level Expert                 Generate for specific level
+    --limit N                     Tweets per query (default: 10)
+    --save                        Save to ~/clawd/drafts/
+    --update                      Update skills with research metadata
+    --json                        JSON output
+  
   skill tag <skill-id> <tag1>     Add custom tags to skill
   skill ignore <keyword>          Ignore keyword in clustering
   skill name <skill-id> <name>   Set custom name for skill
@@ -729,6 +918,9 @@ async function main() {
       break;
     case "deep-dive":
       await cmdDeepDive();
+      break;
+    case "brief":
+      await cmdBrief();
       break;
     case "analytics":
       await cmdAnalytics();

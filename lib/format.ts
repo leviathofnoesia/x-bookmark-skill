@@ -32,6 +32,10 @@ export function formatSkillTelegram(skill: Skill, index?: number): string {
     out += `   Topics: ${skill.topKeywords.slice(0, 5).join(", ")}\n`;
   }
   
+  if (skill.suggestedQueries && skill.suggestedQueries.length > 0) {
+    out += `   Research: ${skill.suggestedQueries.slice(0, 3).join(", ")}\n`;
+  }
+  
   if (skill.topDomains.length > 0) {
     out += `   Sources: ${skill.topDomains.slice(0, 3).join(", ")}`;
   }
@@ -127,6 +131,7 @@ export interface AgentCompilerSkill {
   }[];
   capability_tags: string[];
   keywords: string[];
+  suggested_queries: string[];  // Research-ready queries for x-research-skill
   domain_categories: string[];
   parent_skill?: string;
   child_skills: string[];
@@ -138,6 +143,10 @@ export interface AgentCompilerSkill {
     earliest: string;
     latest: string;
   };
+  // Phase 3: Research metadata
+  last_researched?: string;
+  research_discovered?: string[];
+  research_count?: number;
 }
 
 export interface AgentCompilerExport {
@@ -170,6 +179,7 @@ export function formatAgentCompiler(skills: Skill[], bookmarkCount: number): Age
       })),
       capability_tags: skill.capabilityTags,
       keywords: skill.topKeywords,
+      suggested_queries: skill.suggestedQueries || [],
       domain_categories: [], // Could add domain classification
       parent_skill: skill.parentSkillId,
       child_skills: skill.childSkillIds,
@@ -181,6 +191,10 @@ export function formatAgentCompiler(skills: Skill[], bookmarkCount: number): Age
         earliest: new Date(skill.dateRange.earliest).toISOString(),
         latest: new Date(skill.dateRange.latest).toISOString(),
       },
+      // Phase 3: Research metadata
+      last_researched: skill.lastResearched ? new Date(skill.lastResearched).toISOString() : undefined,
+      research_discovered: skill.researchDiscovered,
+      research_count: skill.researchCount,
     })),
   };
 }

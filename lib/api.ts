@@ -360,3 +360,47 @@ export async function searchTweets(
 
   return allTweets;
 }
+
+/**
+ * Clear all cached search results.
+ */
+export function clearCache(): number {
+  ensureCacheDir();
+  try {
+    const files = readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
+    let count = 0;
+    for (const file of files) {
+      unlinkSync(join(CACHE_DIR, file));
+      count++;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Prune expired cache entries.
+ */
+export function pruneCache(): number {
+  ensureCacheDir();
+  try {
+    const files = readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
+    let count = 0;
+    const now = Date.now();
+    for (const file of files) {
+      try {
+        const entry: CacheEntry = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf-8'));
+        if (now - entry.timestamp > DEFAULT_TTL_MS) {
+          unlinkSync(join(CACHE_DIR, file));
+          count++;
+        }
+      } catch {
+        // Skip invalid files
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
