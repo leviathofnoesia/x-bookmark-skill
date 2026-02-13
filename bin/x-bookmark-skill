@@ -18,6 +18,7 @@ import * as api from "../lib/api.js";
 import * as cluster from "../lib/cluster.js";
 import * as skill from "../lib/skill.js";
 import * as format from "../lib/format.js";
+import * as manager from "../lib/manager.js";
 
 // Ensure data directory exists
 if (!existsSync(DATA_DIR)) {
@@ -54,6 +55,8 @@ async function cmdImport() {
   const count = Math.min(parseInt(getOpt("count") || "100"), 800);
   const force = getFlag("force");
   const quick = getFlag("quick"); // Quick mode: max 100 bookmarks
+  const quality = getFlag("quality"); // Filter by engagement
+  const minLikes = parseInt(getOpt("min-likes") || "0");
   
   // Quick mode overrides count
   const actualCount = quick ? Math.min(count, 100) : count;
@@ -62,8 +65,17 @@ async function cmdImport() {
   if (!force && existsSync(BOOKMARKS_FILE)) {
     const cached = JSON.parse(readFileSync(BOOKMARKS_FILE, "utf-8"));
     if (cached.tweets && cached.tweets.length > 0) {
-      console.error(`Using cached bookmarks (${cached.tweets.length}). Use --force to re-fetch.`);
-      return cached.tweets;
+      let tweets = cached.tweets;
+      
+      // Phase 2: Apply quality filters
+      if (quality || minLikes > 0) {
+        const threshold = quality ? 10 : minLikes;
+        tweets = tweets.filter((t: api.Tweet) => t.metrics.likes >= threshold);
+        console.error(`Filtered to ${tweets.length} bookmarks (${threshold}+ likes)`);
+      }
+      
+      console.error(`Using cached bookmarks (${tweets.length}). Use --force to re-fetch.`);
+      return tweets;
     }
   }
   
@@ -71,7 +83,15 @@ async function cmdImport() {
   
   try {
     api.resetUsage(); // Reset cost tracking
-    const tweets = await api.fetchBookmarks(actualCount);
+    let tweets = await api.fetchBookmarks(actualCount);
+    
+    // Phase 2: Apply quality filters
+    if (quality || minLikes > 0) {
+      const threshold = quality ? 10 : minLikes;
+      tweets = tweets.filter((t: api.Tweet) => t.metrics.likes >= threshold);
+      console.error(`Filtered to ${tweets.length} bookmarks (${threshold}+ likes)`);
+    }
+    
     const usage = api.getUsage();
     
     // Cache
@@ -97,6 +117,8 @@ async function cmdSkills() {
   const limit = parseInt(getOpt("limit") || "20");
   const jsonFlag = getFlag("json");
   const treeFlag = getFlag("tree");
+  const since = getOpt("since"); // e.g., 30d, 7d
+  const isNew = getFlag("new"); // Recently emerged skills
   
   // Load or compute skills
   let skills = await getSkills();
@@ -104,6 +126,16 @@ async function cmdSkills() {
   // Filter by level
   if (level) {
     skills = skills.filter((s) => s.level.toLowerCase() === level.toLowerCase());
+  }
+  
+  // Phase 2: Time filtering
+  if (since || isNew) {
+    const now = Date.now();
+    const threshold = since 
+      ? now - parseSinceMs(since)
+      : now - (30 * 24 * 60 * 60 * 1000); // Default 30 days for --new
+    
+    skills = skills.filter((s) => s.dateRange.latest > threshold);
   }
   
   // Sort
@@ -126,6 +158,18 @@ async function cmdSkills() {
   } else {
     console.log(format.formatSkillsTelegram(skills));
   }
+}
+
+function parseSinceMs(since: string): number {
+  const match = since.match(/^(\d+)(d|h|m)$/);
+  if (match) {
+    const num = parseInt(match[1]);
+    const unit = match[2];
+    return unit === "d" ? num * 24 * 60 * 60 * 1000
+         : unit === "h" ? num * 60 * 60 * 1000
+         : num * 60 * 1000;
+  }
+  return 30 * 24 * 60 * 60 * 1000; // Default 30 days
 }
 
 async function cmdSkill() {
@@ -208,6 +252,169 @@ async function cmdExport() {
   } else {
     console.log(output);
   }
+}
+
+// ============ Phase 1: Deep Dive ============
+
+async function cmdDeepDive() {
+  const skillName = args[1];
+  if (!skillName) {
+    console.error("Usage: x-bookmark-skill deep-dive <skill-name> [options]");
+    process.exit(1);
+  }
+  
+  const limit = parseInt(getOpt("limit") || "15");
+  const quick = getFlag("quick");
+  const quality = getFlag("quality");
+  const since = getOpt("since") || "30d";
+  const save = getFlag("save");
+  const jsonFlag = getFlag("json");
+  
+  // Find skill to get search terms
+  const skills = await getSkills();
+  const skillData = skills.find(s => 
+    s.name.toLowerCase() === skillName.toLowerCase() ||
+    s.id.toLowerCase() === skillName.toLowerCase()
+  );
+  
+  // Build search query from skill keywords
+  const searchTerms = skillData 
+    ? skillData.topKeywords.slice(0, 3).join(" ")
+    : skillName;
+  
+  console.error(`Searching X for: "${searchTerms}"...`);
+  
+  try {
+    api.resetUsage();
+    const tweets = await api.searchTweets(searchTerms, {
+      maxResults: limit,
+      quick,
+      since,
+      minLikes: quality ? 10 : undefined,
+    });
+    
+    const usage = api.getUsage();
+    
+    if (jsonFlag) {
+      console.log(JSON.stringify(tweets, null, 2));
+    } else {
+      console.log(`🔍 Deep dive: ${skillName}\n`);
+      for (let i = 0; i < Math.min(tweets.length, limit); i++) {
+        const t = tweets[i];
+        const text = t.text.length > 120 ? t.text.slice(0, 117) + "..." : t.text;
+        console.log(`${i + 1}. @${t.username}: ${text}`);
+        console.log(`   ❤️ ${t.metrics.likes} · ${t.tweet_url}\n`);
+      }
+    }
+    
+    console.error(`📊 Found ${tweets.length} tweets · est. cost ~$${usage.estimatedCost.toFixed(2)}`);
+    
+    // Save to drafts
+    if (save) {
+      const draftsDir = join(process.env.HOME || "", "clawd", "drafts");
+      if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true });
+      
+      const slug = skillName.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
+      const date = new Date().toISOString().split("T")[0];
+      const path = join(draftsDir, `skill-deep-dive-${slug}-${date}.md`);
+      
+      let md = `# Deep Dive: ${skillName}\n\n`;
+      md += `**Date:** ${date}\n`;
+      md += `**Search:** ${searchTerms}\n`;
+      md += `**Found:** ${tweets.length} tweets\n\n---\n\n`;
+      
+      for (const t of tweets) {
+        md += `- **@${t.username}** (${t.metrics.likes} likes)\n`;
+        md += `  > ${t.text.slice(0, 200)}\n`;
+        md += `  [Tweet](${t.tweet_url})\n\n`;
+      }
+      
+      writeFileSync(path, md);
+      console.error(`Saved to ${path}`);
+    }
+  } catch (e: any) {
+    console.error(`Error: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+// ============ Phase 3: Skill Management ============
+
+function cmdSkillManage() {
+  const action = args[1];
+  const skills = getSkillsSync();
+  
+  if (action === "tag") {
+    const skillId = args[2];
+    const tags = args.slice(3);
+    if (!skillId || tags.length === 0) {
+      console.error("Usage: x-bookmark-skill skill tag <skill-id> <tag1> [tag2 ...]");
+      process.exit(1);
+    }
+    manager.addCustomTags(skillId, tags);
+    console.error(`Added tags to skill: ${tags.join(", ")}`);
+  } 
+  else if (action === "ignore") {
+    const keyword = args[2];
+    if (!keyword) {
+      console.error("Usage: x-bookmark-skill skill ignore <keyword>");
+      process.exit(1);
+    }
+    manager.addIgnoredKeyword(keyword);
+    console.error(`Added ignored keyword: ${keyword}`);
+  }
+  else if (action === "name") {
+    const skillId = args[2];
+    const name = args[3];
+    if (!skillId || !name) {
+      console.error("Usage: x-bookmark-skill skill name <skill-id> <new-name>");
+      process.exit(1);
+    }
+    manager.setCustomName(skillId, name);
+    console.error(`Set custom name: ${name}`);
+  }
+  else if (action === "list") {
+    const ignored = manager.getIgnoredKeywords();
+    const customTags = manager.getAllCustomTags();
+    const customNames = manager.getAllCustomNames();
+    
+    console.log("Ignored Keywords:");
+    console.log(ignored.length ? ignored.map(k => `  - ${k}`).join("\n") : "  (none)");
+    
+    console.log("\nCustom Tags:");
+    if (Object.keys(customTags).length === 0) {
+      console.log("  (none)");
+    } else {
+      for (const [id, tags] of Object.entries(customTags)) {
+        console.log(`  ${id}: ${tags.join(", ")}`);
+      }
+    }
+    
+    console.log("\nCustom Names:");
+    if (Object.keys(customNames).length === 0) {
+      console.log("  (none)");
+    } else {
+      for (const [id, name] of Object.entries(customNames)) {
+        console.log(`  ${id}: ${name}`);
+      }
+    }
+  }
+  else if (action === "clear") {
+    manager.resetManager();
+    console.error("Cleared all skill customizations.");
+  }
+  else {
+    console.error("Usage: x-bookmark-skill skill <tag|ignore|name|list|clear> ...");
+    process.exit(1);
+  }
+}
+
+function getSkillsSync(): skill.Skill[] {
+  if (existsSync(SKILLS_FILE)) {
+    const data = JSON.parse(readFileSync(SKILLS_FILE, "utf-8"));
+    if (data.skills) return data.skills;
+  }
+  return [];
 }
 
 function cmdAuth() {
@@ -441,16 +648,34 @@ Commands:
   import [--count N]              Fetch bookmarks from X API (default: 100, max: 800)
     --force                       Ignore cache, re-fetch
     --quick                       Quick mode: max 100 bookmarks, cost display
+    --quality                     Filter to bookmarks with 10+ likes
+    --min-likes N                 Filter to bookmarks with N+ likes
   
   skills [--level L] [--sort X]   List skills (default: sort by score)
     --level Expert|Specialist|Practitioner|Novice
     --sort score|count|recent
     --limit N                     Max results (default: 20)
+    --since 30d                   Skills active in last 30 days
+    --new                         Recently emerged skills (last 30 days)
     --json                        JSON output
     --tree                        Tree view
   
   skill <name-or-id>              Show skill details
     --evidence                    Include all evidence
+  
+  deep-dive <skill-name>          Search X for more context on a skill
+    --limit N                     Max results (default: 15)
+    --quick                       Quick mode
+    --quality                     Filter to 10+ likes
+    --since 30d                   Search in last 30 days
+    --save                        Save to ~/clawd/drafts/
+    --json                        JSON output
+  
+  skill tag <skill-id> <tag1>     Add custom tags to skill
+  skill ignore <keyword>          Ignore keyword in clustering
+  skill name <skill-id> <name>   Set custom name for skill
+  skill list                      List all customizations
+  skill clear                     Clear all skill customizations
   
   analytics                       Show analytics summary
     --json                        JSON output
@@ -465,20 +690,25 @@ Commands:
   
   auth <token>                    Set X bearer token (or use X_BEARER_TOKEN env)
   
+  cache clear                      Clear API cache
+  cache prune                     Prune expired cache
+  
   help                            Show this help
 
 Cost:
   API uses pay-per-use pricing (no subscriptions).
   - Bookmark read: $0.005 per tweet
   - User lookup: $0.010
+  - Search: $0.50 per page
 
 Examples:
-  x-bookmark-skill import --count 200
+  x-bookmark-skill import --count 200 --quality
   x-bookmark-skill import --quick
-  x-bookmark-skill skills --level Expert --limit 10
+  x-bookmark-skill skills --since 30d
+  x-bookmark-skill deep-dive "machine learning" --save
+  x-bookmark-skill skill tag ml-ai python,ml,ai
   x-bookmark-skill analytics --json
   x-bookmark-skill export --format agent-compiler --output skills.json
-  x-bookmark-skill serve --port 3456
 `);
 }
 
@@ -497,6 +727,9 @@ async function main() {
         await cmdSkill();
       }
       break;
+    case "deep-dive":
+      await cmdDeepDive();
+      break;
     case "analytics":
       await cmdAnalytics();
       break;
@@ -509,11 +742,24 @@ async function main() {
     case "auth":
       cmdAuth();
       break;
+    case "cache":
+      const sub = args[1];
+      if (sub === "clear") {
+        console.log(`Cleared ${api.clearCache()} cache entries.`);
+      } else {
+        console.log(`Pruned ${api.pruneCache()} expired entries.`);
+      }
+      break;
     case "help":
     case "--help":
     case "-h":
     default:
-      usage();
+      // Check for skill management subcommand
+      if (command === "skill" && args[1]) {
+        cmdSkillManage();
+      } else {
+        usage();
+      }
   }
 }
 
