@@ -9,14 +9,15 @@ Designed for AI coding agents (Claude Code, OpenClaw, etc.) to understand user e
 ## What it does
 
 ```
-Your X Bookmarks → Topics → Skills → Agent Compiler Export
+Your X Bookmarks → Topics → Skills → Agent-Ready Export
 ```
 
 1. **Fetches** bookmarked tweets from X API
 2. **Extracts** topics from tweet text, hashtags, and linked URLs
 3. **Clusters** bookmarks by topic similarity
 4. **Scores** expertise level based on count, recency, diversity
-5. **Exports** structured skill data for AI agents
+5. **Analyzes** evidence quality and actionable content
+6. **Exports** structured skill data for AI agents
 
 ## Quick Start
 
@@ -42,6 +43,8 @@ x-bookmark-skill skills
 x-bookmark-skill export --format agent-compiler
 ```
 
+Each skill includes `suggested_queries` ready for x-research-skill.
+
 ## CLI Commands
 
 | Command | Description |
@@ -50,6 +53,9 @@ x-bookmark-skill export --format agent-compiler
 | `import --quick` | Quick mode (max 100, cost display) |
 | `skills` | List all skills |
 | `skill <name>` | Show skill details |
+| `brief <skill>` | Generate skill briefing |
+| `brief --gaps` | Include gap analysis |
+| `deep-dive <skill>` | Search X for context |
 | `analytics` | Show analytics summary |
 | `export` | Export skills (agent-compiler/json/telegram) |
 | `serve` | Start REST API server |
@@ -114,6 +120,15 @@ POST /api/import              Fetch & process bookmarks
       "skill": "Machine Learning",
       "level": "Specialist",
       "confidence": 0.72,
+      "score": 58,
+      "evidence_quality": 0.75,
+      "suggested_queries": ["machine learning", "machine learning 2024"],
+      "actionable": {
+        "repos": [{"url": "https://github.com/...", "action": "clone/test"}],
+        "tools": [],
+        "docs": [],
+        "jobs": []
+      },
       "capability_tags": ["machine learning", "ml", "ai"],
       "evidence": [...],
       "bookmark_count": 34

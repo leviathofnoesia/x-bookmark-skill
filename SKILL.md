@@ -154,7 +154,7 @@ x-bookmark-skill serve
 
 ## REST API
 
-```
+```text
 GET  /api/health                       Health check
 GET  /api/skills                       List skills
      ?level=Expert                     Filter by level
@@ -356,6 +356,7 @@ x-bookmark-skill import --count 200 --quality
       "level": "Specialist",
       "confidence": 0.72,
       "score": 58,
+      "evidence_quality": 0.75,
       "capability_tags": ["machine learning", "ml", "ai"],
       "keywords": ["machine learning", "deep learning", "neural networks"],
       "suggested_queries": [
@@ -373,6 +374,15 @@ x-bookmark-skill import --count 200 --quality
           "relevance": 0.9
         }
       ],
+      "actionable": {
+        "repos": [
+          { "url": "https://github.com/...", "title": "repo name", "action": "clone/test", "domain": "github.com" }
+        ],
+        "tools": [],
+        "docs": [],
+        "posts": [],
+        "jobs": []
+      },
       "bookmark_count": 34,
       "authors": ["@person1", "@person2"],
       "domains": ["arxiv.org", "github.com"],

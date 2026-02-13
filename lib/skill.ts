@@ -15,6 +15,7 @@ export interface Skill {
   level: SkillLevel;
   score: number;
   confidence: number;
+  evidenceQuality: number;  // Average quality of evidence (0-1)
   bookmarkCount: number;
   evidence: SkillEvidence[];
   parentSkillId?: string;
@@ -38,6 +39,13 @@ export interface Skill {
   version: number;
 }
 
+export interface ActionableItem {
+  url: string;
+  title: string;
+  action: string;
+  domain: string;
+}
+
 export interface SkillEvidence {
   bookmarkId: string;
   url: string;
@@ -46,6 +54,7 @@ export interface SkillEvidence {
   domain: string;
   addedAt: number;
   relevance: number;
+  quality: number;  // Evidence quality score (0-1)
 }
 
 export interface SkillScore {
@@ -74,7 +83,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
   
   const scoreResult = calculateSkillScore(cluster, clusterBookmarks);
   
-  // Build evidence from bookmarks
+  // Build evidence from bookmarks (with quality score)
   const evidence: SkillEvidence[] = clusterBookmarks.map((b) => {
     const topicSet = new Set(b.topics.all);
     const relevance = [...cluster.keywords].filter((k) => topicSet.has(k)).length /
@@ -88,8 +97,22 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
       domain: b.tweet.urls[0] ? new URL(b.tweet.urls[0]).hostname : "x.com",
       addedAt: b.savedAt,
       relevance,
+      quality: 0.5,  // Will be calculated after all evidence is built
     };
   });
+  
+  // Calculate evidence quality (needs all authors/domains)
+  const authorSet = new Set(evidence.map(e => e.author));
+  const domainSet = new Set(evidence.map(e => e.domain));
+  const evidenceQuality = calculateEvidenceQuality(evidence, [...authorSet], [...domainSet]);
+  
+  // Update individual evidence quality scores
+  for (const e of evidence) {
+    e.quality = calculateEvidenceItemQuality(e, authorSet, domainSet);
+  }
+  
+  // Extract actionable content
+  const actionable = extractActionable(evidence);
   
   // Sort evidence by relevance
   evidence.sort((a, b) => b.relevance - a.relevance);
@@ -141,6 +164,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
     level: scoreResult.level,
     score: scoreResult.score,
     confidence: scoreResult.confidence,
+    evidenceQuality,
     bookmarkCount: cluster.bookmarkIds.length,
     evidence: evidence.slice(0, 20),
     childSkillIds: [],
@@ -151,6 +175,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
     suggestedQueries,
     authors: [...cluster.authors],
     dateRange,
+    actionable,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     version: 1,
