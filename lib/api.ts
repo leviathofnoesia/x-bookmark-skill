@@ -1,6 +1,9 @@
 /**
  * X API client for fetching bookmarks and user info.
  * Adapted from x-research-skill pattern.
+ * 
+ * Cost tracking: X API uses pay-per-use pricing.
+ * Bookmark read: $0.005 per request
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -8,6 +11,25 @@ import { join } from "path";
 
 const BASE = "https://api.x.com/2";
 const RATE_DELAY_MS = 350;
+
+// Cost tracking
+export interface ApiUsage {
+  requests: number;
+  estimatedCost: number;
+}
+
+let usage: ApiUsage = { requests: 0, estimatedCost: 0 };
+
+export function getUsage(): ApiUsage {
+  return { ...usage };
+}
+
+export function resetUsage(): void {
+  usage = { requests: 0, estimatedCost: 0 };
+}
+
+const COST_PER_BOOKMARK_READ = 0.005;
+const COST_PER_USER_LOOKUP = 0.010;
 
 function getToken(): string {
   // Try env first
@@ -104,7 +126,10 @@ function parseTweets(raw: RawResponse): Tweet[] {
 const TWEET_FIELDS = "tweet.fields=created_at,public_metrics,author_id,conversation_id,entities";
 const USER_FIELDS = "user.fields=username,name,public_metrics";
 
-async function apiGet(url: string): Promise<RawResponse> {
+async function apiGet(url: string, cost: number = 0): Promise<RawResponse> {
+  usage.requests++;
+  usage.estimatedCost += cost;
+  
   const token = getToken();
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -128,10 +153,11 @@ async function apiGet(url: string): Promise<RawResponse> {
 
 /**
  * Get the authenticated user's ID.
+ * Costs $0.010 per user lookup.
  */
 export async function getCurrentUser(): Promise<{ id: string; username: string; name: string }> {
   const url = `${BASE}/2/users/me?${USER_FIELDS}`;
-  const raw = await apiGet(url);
+  const raw = await apiGet(url, COST_PER_USER_LOOKUP);
   
   if (!raw.data || Array.isArray(raw.data)) {
     throw new Error("Failed to get current user");
@@ -150,6 +176,7 @@ export async function getCurrentUser(): Promise<{ id: string; username: string; 
  * @param maxId Pagination cursor
  */
 export async function fetchBookmarks(count: number = 100, maxId?: string): Promise<Tweet[]> {
+  // First get current user (costs $0.010)
   const user = await getCurrentUser();
   
   let allTweets: Tweet[] = [];
@@ -164,7 +191,9 @@ export async function fetchBookmarks(count: number = 100, maxId?: string): Promi
     
     const url = `${BASE}/users/${user.id}/bookmarks?max_results=${maxResults}&${TWEET_FIELDS}&expansions=author_id&${USER_FIELDS}${pagination}${maxIdParam}`;
     
-    const raw = await apiGet(url);
+    // Each request reads up to maxResults tweets = maxResults * $0.005
+    const requestCost = maxResults * COST_PER_BOOKMARK_READ;
+    const raw = await apiGet(url, requestCost);
     const tweets = parseTweets(raw);
     allTweets.push(...tweets);
     

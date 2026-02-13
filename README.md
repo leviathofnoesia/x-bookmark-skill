@@ -26,7 +26,7 @@ git clone https://github.com/leviathofnoesia/x-bookmark-skill.git
 cd x-bookmark-skill
 bun install
 
-# Make executable (or install globally with `bun link`)
+# Make executable
 chmod +x bin/x-bookmark-skill
 
 # Set X API token (or use X_BEARER_TOKEN env var)
@@ -42,18 +42,12 @@ x-bookmark-skill skills
 x-bookmark-skill export --format agent-compiler
 ```
 
-Or run with bun:
-
-```bash
-bun run x-bookmark-skill import --count 200
-bun run x-bookmark-skill skills
-```
-
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
 | `import [--count N]` | Fetch bookmarks from X API |
+| `import --quick` | Quick mode (max 100, cost display) |
 | `skills` | List all skills |
 | `skill <name>` | Show skill details |
 | `analytics` | Show analytics summary |
@@ -62,20 +56,28 @@ bun run x-bookmark-skill skills
 
 See `x-bookmark-skill help` for full options.
 
-## Installation
-
-### Local
+## Quick Mode
 
 ```bash
-bun install
-chmod +x bin/x-bookmark-skill
+# Quick mode: faster, max 100 bookmarks, shows cost
+x-bookmark-skill import --quick
+
+# Standard: up to 800 bookmarks
+x-bookmark-skill import --count 200
 ```
 
-### Global
+## Cost Tracking
 
-```bash
-bun link
-x-bookmark-skill import --count 200
+X API uses **pay-per-use pricing** (no subscriptions):
+
+| Operation | Cost |
+|-----------|------|
+| Bookmark read | $0.005 per tweet |
+| User lookup | $0.010 |
+
+The CLI displays estimated cost after each import:
+```
+📊 3 API requests · est. cost ~$0.51
 ```
 
 ## REST API

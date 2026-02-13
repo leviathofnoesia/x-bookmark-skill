@@ -53,6 +53,10 @@ function getOpt(name: string): string | undefined {
 async function cmdImport() {
   const count = Math.min(parseInt(getOpt("count") || "100"), 800);
   const force = getFlag("force");
+  const quick = getFlag("quick"); // Quick mode: max 100 bookmarks
+  
+  // Quick mode overrides count
+  const actualCount = quick ? Math.min(count, 100) : count;
   
   // Check cache
   if (!force && existsSync(BOOKMARKS_FILE)) {
@@ -63,10 +67,12 @@ async function cmdImport() {
     }
   }
   
-  console.error(`Fetching ${count} bookmarks from X API...`);
+  console.error(`Fetching ${actualCount} bookmarks from X API...`);
   
   try {
-    const tweets = await api.fetchBookmarks(count);
+    api.resetUsage(); // Reset cost tracking
+    const tweets = await api.fetchBookmarks(actualCount);
+    const usage = api.getUsage();
     
     // Cache
     const cacheData = {
@@ -77,6 +83,7 @@ async function cmdImport() {
     writeFileSync(BOOKMARKS_FILE, JSON.stringify(cacheData, null, 2));
     
     console.error(`Fetched ${tweets.length} bookmarks.`);
+    console.error(`📊 ${usage.requests} API requests · est. cost ~$${usage.estimatedCost.toFixed(2)}`);
     return tweets;
   } catch (e: any) {
     console.error(`Error: ${e.message}`);
@@ -433,6 +440,7 @@ function usage() {
 Commands:
   import [--count N]              Fetch bookmarks from X API (default: 100, max: 800)
     --force                       Ignore cache, re-fetch
+    --quick                       Quick mode: max 100 bookmarks, cost display
   
   skills [--level L] [--sort X]   List skills (default: sort by score)
     --level Expert|Specialist|Practitioner|Novice
@@ -459,8 +467,14 @@ Commands:
   
   help                            Show this help
 
+Cost:
+  API uses pay-per-use pricing (no subscriptions).
+  - Bookmark read: $0.005 per tweet
+  - User lookup: $0.010
+
 Examples:
   x-bookmark-skill import --count 200
+  x-bookmark-skill import --quick
   x-bookmark-skill skills --level Expert --limit 10
   x-bookmark-skill analytics --json
   x-bookmark-skill export --format agent-compiler --output skills.json
