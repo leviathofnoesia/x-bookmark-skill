@@ -1,0 +1,350 @@
+/**
+ * Skill scoring and tree building.
+ * Converts clusters into skills with scores and levels.
+ */
+
+import type { Bookmark, TopicCluster } from "./cluster.js";
+
+export type SkillLevel = "Novice" | "Practitioner" | "Specialist" | "Expert";
+
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  level: SkillLevel;
+  score: number;
+  confidence: number;
+  bookmarkCount: number;
+  evidence: SkillEvidence[];
+  parentSkillId?: string;
+  childSkillIds: string[];
+  relatedSkillIds: string[];
+  capabilityTags: string[];
+  topDomains: string[];
+  topKeywords: string[];
+  authors: string[];
+  dateRange: {
+    earliest: number;
+    latest: number;
+  };
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+}
+
+export interface SkillEvidence {
+  bookmarkId: string;
+  url: string;
+  title: string;
+  author: string;
+  domain: string;
+  addedAt: number;
+  relevance: number;
+}
+
+export interface SkillScore {
+  score: number;
+  level: SkillLevel;
+  confidence: number;
+}
+
+/**
+ * Build skills from clusters.
+ */
+export function buildSkills(
+  clusters: TopicCluster[],
+  bookmarks: Bookmark[]
+): Skill[] {
+  return clusters.map((cluster) => buildSkill(cluster, bookmarks));
+}
+
+/**
+ * Build a single skill from a cluster.
+ */
+function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
+  const clusterBookmarks = bookmarks.filter((b) =>
+    cluster.bookmarkIds.includes(b.id)
+  );
+  
+  const scoreResult = calculateSkillScore(cluster, clusterBookmarks);
+  
+  // Build evidence from bookmarks
+  const evidence: SkillEvidence[] = clusterBookmarks.map((b) => {
+    const topicSet = new Set(b.topics.all);
+    const relevance = [...cluster.keywords].filter((k) => topicSet.has(k)).length /
+      cluster.keywords.size;
+    
+    return {
+      bookmarkId: b.id,
+      url: b.tweet.tweet_url,
+      title: b.tweet.text.slice(0, 200),
+      author: b.tweet.username,
+      domain: b.tweet.urls[0] ? new URL(b.tweet.urls[0]).hostname : "x.com",
+      addedAt: b.savedAt,
+      relevance,
+    };
+  });
+  
+  // Sort evidence by relevance
+  evidence.sort((a, b) => b.relevance - a.relevance);
+  
+  // Extract top domains and keywords
+  const domainCounts = new Map<string, number>();
+  const keywordCounts = new Map<string, number>();
+  
+  for (const b of clusterBookmarks) {
+    for (const d of b.topics.domains) {
+      domainCounts.set(d, (domainCounts.get(d) || 0) + 1);
+    }
+    for (const k of b.topics.keywords) {
+      keywordCounts.set(k, (keywordCounts.get(k) || 0) + 1);
+    }
+  }
+  
+  const topDomains = [...domainCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([d]) => d);
+  
+  const topKeywords = [...keywordCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([k]) => k);
+  
+  // Calculate date range
+  const timestamps = clusterBookmarks.map((b) => b.savedAt);
+  const dateRange = {
+    earliest: Math.min(...timestamps),
+    latest: Math.max(...timestamps),
+  };
+  
+  // Generate capability tags from top keywords
+  const capabilityTags = generateCapabilityTags(topKeywords);
+  
+  // Build description
+  const description = generateDescription(cluster.name, topKeywords, clusterBookmarks.length);
+  
+  return {
+    id: cluster.id,
+    name: cluster.name,
+    slug: cluster.id,
+    description,
+    level: scoreResult.level,
+    score: scoreResult.score,
+    confidence: scoreResult.confidence,
+    bookmarkCount: cluster.bookmarkIds.length,
+    evidence: evidence.slice(0, 20),
+    childSkillIds: [],
+    relatedSkillIds: [],
+    capabilityTags,
+    topDomains,
+    topKeywords,
+    authors: [...cluster.authors],
+    dateRange,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    version: 1,
+  };
+}
+
+/**
+ * Calculate skill score based on multiple factors.
+ */
+function calculateSkillScore(cluster: TopicCluster, bookmarks: Bookmark[]): SkillScore {
+  const count = bookmarks.length;
+  const now = Date.now();
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  const halfLifeMs = 180 * 24 * 60 * 60 * 1000; // 180 days
+  
+  // 1. Count score (log scale, max at 30)
+  const countScore = Math.min(Math.log2(count + 1) / Math.log2(31), 1) * 30;
+  
+  // 2. Recency score (exponential decay)
+  const latest = Math.max(...bookmarks.map((b) => b.savedAt));
+  const recencyScore = latest
+    ? Math.exp(-(now - latest) / halfLifeMs) * 25
+    : 0;
+  
+  // 3. Author diversity (unique authors / total)
+  const uniqueAuthors = cluster.authors.size;
+  const authorDiversityScore = Math.min((uniqueAuthors / count) * 20, 20);
+  
+  // 4. Source diversity (unique domains / total)
+  const uniqueDomains = cluster.domains.size;
+  const domainDiversityScore = Math.min((uniqueDomains / count) * 20, 20);
+  
+  // 5. Recent activity bonus
+  const recentCount = bookmarks.filter((b) => now - b.savedAt < thirtyDaysMs).length;
+  const recentBonus = recentCount > 0 ? Math.min(recentCount / 5, 5) : 0;
+  
+  // Calculate final score
+  const rawScore =
+    countScore +
+    recencyScore +
+    authorDiversityScore +
+    domainDiversityScore +
+    recentBonus;
+  
+  const score = Math.round(rawScore * 10) / 10;
+  
+  // Determine level
+  const level = scoreToLevel(score);
+  
+  // Calculate confidence
+  const confidence = calculateConfidence(cluster, bookmarks);
+  
+  return { score, level, confidence };
+}
+
+/**
+ * Map score to skill level.
+ */
+function scoreToLevel(score: number): SkillLevel {
+  if (score >= 76) return "Expert";
+  if (score >= 51) return "Specialist";
+  if (score >= 26) return "Practitioner";
+  return "Novice";
+}
+
+/**
+ * Calculate confidence based on cluster quality.
+ */
+function calculateConfidence(cluster: TopicCluster, bookmarks: Bookmark[]): number {
+  let confidence = 0.5; // Base
+  
+  // More bookmarks = higher confidence
+  confidence += Math.min(bookmarks.length / 30, 0.2);
+  
+  // High cohesion = higher confidence
+  confidence += cluster.cohesion * 0.2;
+  
+  // Multiple authors = higher confidence
+  if (cluster.authors.size >= 3) confidence += 0.1;
+  else if (cluster.authors.size === 1) confidence -= 0.1;
+  
+  // Multiple domains = higher confidence
+  if (cluster.domains.size >= 3) confidence += 0.1;
+  else if (cluster.domains.size === 1) confidence -= 0.05;
+  
+  return Math.max(0, Math.min(1, Math.round(confidence * 100) / 100));
+}
+
+/**
+ * Generate capability tags from keywords.
+ */
+function generateCapabilityTags(keywords: string[]): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  
+  for (const kw of keywords) {
+    // Add the keyword itself
+    if (!seen.has(kw)) {
+      tags.push(kw);
+      seen.add(kw);
+    }
+    
+    // Add related tags
+    const related = KEYWORD_MAPPINGS[kw];
+    if (related && !seen.has(related)) {
+      tags.push(related);
+      seen.add(related);
+    }
+  }
+  
+  return tags.slice(0, 10);
+}
+
+const KEYWORD_MAPPINGS: Record<string, string> = {
+  "machine learning": "ml",
+  "deep learning": "dl",
+  "artificial intelligence": "ai",
+  "natural language processing": "nlp",
+  "large language model": "llm",
+  "large language models": "llm",
+  "cryptocurrency": "crypto",
+  "defi": "defi",
+  "web3": "web3",
+  "blockchain": "blockchain",
+  "javascript": "js",
+  "typescript": "ts",
+  "python": "py",
+  "golang": "go",
+  "react": "react",
+  "nodejs": "node",
+  "kubernetes": "k8s",
+  "devops": "devops",
+};
+
+/**
+ * Generate skill description.
+ */
+function generateDescription(
+  name: string,
+  keywords: string[],
+  count: number
+): string {
+  const topKw = keywords.slice(0, 3).join(", ");
+  return `${name} expertise inferred from ${count} bookmarked tweets. Key topics: ${topKw}`;
+}
+
+/**
+ * Build skill hierarchy (parent/child relationships).
+ */
+export function buildSkillHierarchy(skills: Skill[]): Skill[] {
+  // Simple hierarchy based on keyword containment
+  const keywordIndex = new Map<string, Skill[]>();
+  
+  // Index skills by their keywords
+  for (const skill of skills) {
+    for (const kw of skill.topKeywords) {
+      if (!keywordIndex.has(kw)) {
+        keywordIndex.set(kw, []);
+      }
+      keywordIndex.get(kw)!.push(skill);
+    }
+  }
+  
+  // Find parent-child relationships
+  for (const skill of skills) {
+    const parentKeywords = skill.topKeywords.slice(0, Math.ceil(skill.topKeywords.length / 2));
+    
+    for (const parentKw of parentKeywords) {
+      const potentialParents = keywordIndex.get(parentKw) || [];
+      
+      for (const parent of potentialParents) {
+        if (parent.id !== skill.id && parent.topKeywords.length > skill.topKeywords.length) {
+          // Check if parent actually contains child's keywords
+          const childKeywordsInParent = skill.topKeywords.filter((k) =>
+            parent.topKeywords.includes(k)
+          );
+          
+          if (childKeywordsInParent.length >= skill.topKeywords.length * 0.5) {
+            skill.parentSkillId = parent.id;
+            if (!parent.childSkillIds.includes(skill.id)) {
+              parent.childSkillIds.push(skill.id);
+            }
+            break;
+          }
+        }
+      }
+      
+      if (skill.parentSkillId) break;
+    }
+  }
+  
+  // Find related skills
+  for (const skill of skills) {
+    if (!skill.parentSkillId) {
+      // Find siblings and related
+      for (const other of skills) {
+        if (other.id === skill.id) continue;
+        if (other.parentSkillId === skill.parentSkillId) {
+          skill.relatedSkillIds.push(other.id);
+        }
+      }
+    }
+  }
+  
+  return skills;
+}
