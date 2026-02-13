@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "description": "X bookmark-based skill analysis tool for AI agents",
+  "bin": {
+    "x-bookmark-skill": "./bin/x-bookmark-skill"
+  },
   "scripts": {
-    "start": "bun run index.ts",
-    "serve": "bun run server.ts"
+    "start": "bun run bin/x-bookmark-skill",
+    "serve": "bun run bin/x-bookmark-skill serve"
   },
   "dependencies": {
     "express": "^4.18.2",
