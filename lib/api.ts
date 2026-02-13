@@ -1,13 +1,37 @@
 /**
  * X API client for fetching bookmarks and user info.
  * Adapted from x-research-skill pattern.
+ * 
+ * Cost tracking: X API uses pay-per-use pricing.
+ * Bookmark read: $0.005 per request
  */
 
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
+import { createHash } from "crypto";
 
 const BASE = "https://api.x.com/2";
 const RATE_DELAY_MS = 350;
+
+// Cost tracking
+export interface ApiUsage {
+  requests: number;
+  estimatedCost: number;
+}
+
+let usage: ApiUsage = { requests: 0, estimatedCost: 0 };
+
+export function getUsage(): ApiUsage {
+  return { ...usage };
+}
+
+export function resetUsage(): void {
+  usage = { requests: 0, estimatedCost: 0 };
+}
+
+const COST_PER_BOOKMARK_READ = 0.005;
+const COST_PER_USER_LOOKUP = 0.010;
+const COST_PER_SEARCH = 0.50;
 
 function getToken(): string {
   // Try env first
@@ -104,7 +128,10 @@ function parseTweets(raw: RawResponse): Tweet[] {
 const TWEET_FIELDS = "tweet.fields=created_at,public_metrics,author_id,conversation_id,entities";
 const USER_FIELDS = "user.fields=username,name,public_metrics";
 
-async function apiGet(url: string): Promise<RawResponse> {
+async function apiGet(url: string, cost: number = 0): Promise<RawResponse> {
+  usage.requests++;
+  usage.estimatedCost += cost;
+  
   const token = getToken();
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -128,10 +155,11 @@ async function apiGet(url: string): Promise<RawResponse> {
 
 /**
  * Get the authenticated user's ID.
+ * Costs $0.010 per user lookup.
  */
 export async function getCurrentUser(): Promise<{ id: string; username: string; name: string }> {
   const url = `${BASE}/2/users/me?${USER_FIELDS}`;
-  const raw = await apiGet(url);
+  const raw = await apiGet(url, COST_PER_USER_LOOKUP);
   
   if (!raw.data || Array.isArray(raw.data)) {
     throw new Error("Failed to get current user");
@@ -150,6 +178,7 @@ export async function getCurrentUser(): Promise<{ id: string; username: string; 
  * @param maxId Pagination cursor
  */
 export async function fetchBookmarks(count: number = 100, maxId?: string): Promise<Tweet[]> {
+  // First get current user (costs $0.010)
   const user = await getCurrentUser();
   
   let allTweets: Tweet[] = [];
@@ -164,7 +193,9 @@ export async function fetchBookmarks(count: number = 100, maxId?: string): Promi
     
     const url = `${BASE}/users/${user.id}/bookmarks?max_results=${maxResults}&${TWEET_FIELDS}&expansions=author_id&${USER_FIELDS}${pagination}${maxIdParam}`;
     
-    const raw = await apiGet(url);
+    // Each request reads up to maxResults tweets = maxResults * $0.005
+    const requestCost = maxResults * COST_PER_BOOKMARK_READ;
+    const raw = await apiGet(url, requestCost);
     const tweets = parseTweets(raw);
     allTweets.push(...tweets);
     
@@ -201,5 +232,175 @@ export function extractDomain(url: string): string {
     return parsed.hostname.replace(/^www\./, "");
   } catch {
     return "";
+  }
+}
+
+// ============ Search (for deep-dive) ============
+
+const CACHE_DIR = join(import.meta.dir, "..", "data", "cache");
+const DEFAULT_TTL_MS = 15 * 60 * 1000;
+const QUICK_TTL_MS = 3_600_000;
+
+interface CacheEntry {
+  query: string;
+  params: string;
+  timestamp: number;
+  tweets: Tweet[];
+}
+
+function ensureCacheDir() {
+  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+function cacheKey(query: string, params: string = ""): string {
+  const hash = createHash("md5")
+    .update(`${query}|${params}`)
+    .digest("hex")
+    .slice(0, 12);
+  return hash;
+}
+
+export function getCachedSearch(query: string, params: string = "", ttlMs: number = DEFAULT_TTL_MS): Tweet[] | null {
+  ensureCacheDir();
+  const key = cacheKey(query, params);
+  const path = join(CACHE_DIR, `${key}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    const entry: CacheEntry = JSON.parse(readFileSync(path, "utf-8"));
+    if (Date.now() - entry.timestamp > ttlMs) {
+      unlinkSync(path);
+      return null;
+    }
+    return entry.tweets;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedSearch(query: string, params: string = "", tweets: Tweet[]): void {
+  ensureCacheDir();
+  const key = cacheKey(query, params);
+  const path = join(CACHE_DIR, `${key}.json`);
+  const entry: CacheEntry = { query, params, timestamp: Date.now(), tweets };
+  writeFileSync(path, JSON.stringify(entry, null, 2));
+}
+
+/**
+ * Parse since shorthand to ISO timestamp.
+ */
+export function parseSince(since: string): string | null {
+  const match = since.match(/^(\d+)(m|h|d)$/);
+  if (match) {
+    const num = parseInt(match[1]);
+    const unit = match[2];
+    const ms = unit === "m" ? num * 60_000 : unit === "h" ? num * 3_600_000 : num * 86_400_000;
+    return new Date(Date.now() - ms).toISOString();
+  }
+  if (since.includes("T") || since.includes("-")) {
+    try { return new Date(since).toISOString(); } catch { return null; }
+  }
+  return null;
+}
+
+/**
+ * Search tweets (for deep-dive functionality).
+ */
+export async function searchTweets(
+  query: string,
+  opts: {
+    maxResults?: number;
+    pages?: number;
+    sortOrder?: "relevancy" | "recency";
+    since?: string;
+    minLikes?: number;
+    quick?: boolean;
+  } = {}
+): Promise<Tweet[]> {
+  const maxResults = Math.max(Math.min(opts.maxResults || 100, 100), 10);
+  const pages = opts.pages || 1;
+  const sort = opts.sortOrder || "relevancy";
+  const encoded = encodeURIComponent(query);
+  const ttlMs = opts.quick ? QUICK_TTL_MS : DEFAULT_TTL_MS;
+
+  let timeFilter = "";
+  if (opts.since) {
+    const startTime = parseSince(opts.since);
+    if (startTime) timeFilter = `&start_time=${startTime}`;
+  }
+
+  // Check cache
+  const cacheParams = `sort=${sort}&pages=${pages}&since=${opts.since || "7d"}&quick=${opts.quick || false}`;
+  const cached = getCachedSearch(query, cacheParams, ttlMs);
+  
+  let allTweets: Tweet[] = cached || [];
+  let nextToken: string | undefined;
+
+  if (!cached) {
+    for (let page = 0; page < pages; page++) {
+      const pagination = nextToken ? `&pagination_token=${nextToken}` : "";
+      const url = `${BASE}/tweets/search/recent?query=${encoded}&max_results=${maxResults}&${TWEET_FIELDS}&expansions=author_id&${USER_FIELDS}&sort_order=${sort}${timeFilter}${pagination}`;
+
+      const raw = await apiGet(url, COST_PER_SEARCH);
+      const tweets = parseTweets(raw);
+      allTweets.push(...tweets);
+
+      nextToken = raw.meta?.next_token;
+      if (!nextToken) break;
+      if (page < pages - 1) await sleep(RATE_DELAY_MS);
+    }
+    
+    // Cache results
+    setCachedSearch(query, cacheParams, allTweets);
+  }
+
+  // Post-filter: min likes
+  if (opts.minLikes && opts.minLikes > 0) {
+    allTweets = allTweets.filter(t => t.metrics.likes >= opts.minLikes!);
+  }
+
+  return allTweets;
+}
+
+/**
+ * Clear all cached search results.
+ */
+export function clearCache(): number {
+  ensureCacheDir();
+  try {
+    const files = readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
+    let count = 0;
+    for (const file of files) {
+      unlinkSync(join(CACHE_DIR, file));
+      count++;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Prune expired cache entries.
+ */
+export function pruneCache(): number {
+  ensureCacheDir();
+  try {
+    const files = readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
+    let count = 0;
+    const now = Date.now();
+    for (const file of files) {
+      try {
+        const entry: CacheEntry = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf-8'));
+        if (now - entry.timestamp > DEFAULT_TTL_MS) {
+          unlinkSync(join(CACHE_DIR, file));
+          count++;
+        }
+      } catch {
+        // Skip invalid files
+      }
+    }
+    return count;
+  } catch {
+    return 0;
   }
 }

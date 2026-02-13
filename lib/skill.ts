@@ -23,11 +23,16 @@ export interface Skill {
   capabilityTags: string[];
   topDomains: string[];
   topKeywords: string[];
+  suggestedQueries: string[];  // Research-ready queries for x-research-skill
   authors: string[];
   dateRange: {
     earliest: number;
     latest: number;
   };
+  // Phase 3: Research metadata
+  lastResearched?: number;
+  researchDiscovered?: string[];
+  researchCount?: number;
   createdAt: number;
   updatedAt: number;
   version: number;
@@ -122,6 +127,9 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
   // Generate capability tags from top keywords
   const capabilityTags = generateCapabilityTags(topKeywords);
   
+  // Generate suggested queries for research
+  const suggestedQueries = generateSuggestedQueries(topKeywords, cluster.name);
+  
   // Build description
   const description = generateDescription(cluster.name, topKeywords, clusterBookmarks.length);
   
@@ -140,6 +148,7 @@ function buildSkill(cluster: TopicCluster, bookmarks: Bookmark[]): Skill {
     capabilityTags,
     topDomains,
     topKeywords,
+    suggestedQueries,
     authors: [...cluster.authors],
     dateRange,
     createdAt: Date.now(),
@@ -286,6 +295,49 @@ function generateDescription(
 ): string {
   const topKw = keywords.slice(0, 3).join(", ");
   return `${name} expertise inferred from ${count} bookmarked tweets. Key topics: ${topKw}`;
+}
+
+/**
+ * Generate research-ready suggested queries from keywords.
+ * These queries can be fed directly to x-research-skill.
+ */
+function generateSuggestedQueries(keywords: string[], name: string): string[] {
+  const queries: string[] = [];
+  const seen = new Set<string>();
+  
+  // Take top 3 keywords as base queries
+  const topKeywords = keywords.slice(0, 3);
+  
+  for (const kw of topKeywords) {
+    // Basic keyword query
+    if (!seen.has(kw)) {
+      queries.push(kw);
+      seen.add(kw);
+    }
+    
+    // Add year-qualified query (current year context)
+    const yearQuery = `${kw} 2024`;
+    if (!seen.has(yearQuery)) {
+      queries.push(yearQuery);
+      seen.add(yearQuery);
+    }
+  }
+  
+  // Add a few compound queries from combinations
+  if (topKeywords.length >= 2) {
+    const compound1 = `${topKeywords[0]} ${topKeywords[1]}`;
+    if (!seen.has(compound1)) {
+      queries.push(compound1);
+    }
+  }
+  
+  // Add "best practices" query for the main skill area
+  const bestPractices = `${name} best practices`;
+  if (!seen.has(bestPractices)) {
+    queries.push(bestPractices);
+  }
+  
+  return queries.slice(0, 5);  // Max 5 queries
 }
 
 /**
