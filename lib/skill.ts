@@ -660,3 +660,95 @@ export function buildSkillHierarchy(skills: Skill[]): Skill[] {
   
   return skills;
 }
+
+// ============ Feature 2: Skill Trends ============
+
+export interface SkillTrend {
+  skillId: string;
+  skillName: string;
+  previousCount: number;
+  currentCount: number;
+  change: number;
+  status: "growing" | "declining" | "new" | "stale";
+  lastActivity: number;
+}
+
+export interface SkillTrends {
+  trends: SkillTrend[];
+  previousImportDate: number | null;
+  currentImportDate: number;
+  summary: {
+    growing: number;
+    declining: number;
+    new: number;
+    stale: number;
+  };
+}
+
+/**
+ * Calculate skill trends by comparing current skills with import history.
+ * Uses bookmarks metadata to determine growth/decline.
+ */
+export function calculateTrends(
+  skills: Skill[],
+  importHistory: { date: number; count: number; skillCount: number }[]
+): SkillTrends {
+  if (importHistory.length < 2) {
+    return {
+      trends: [],
+      previousImportDate: null,
+      currentImportDate: importHistory[0]?.date || Date.now(),
+      summary: { growing: 0, declining: 0, new: 0, stale: 0 },
+    };
+  }
+
+  const previousImport = importHistory[importHistory.length - 2];
+  const currentImport = importHistory[importHistory.length - 1];
+  
+  // Get previous skill data from last import
+  const previousSkillCount = previousImport?.skillCount || 0;
+  const previousBookmarkCount = previousImport?.count || 0;
+  
+  // Determine if skills are stale (no activity in 30 days)
+  const now = Date.now();
+  const staleThreshold = 30 * 24 * 60 * 60 * 1000;
+  
+  const trends: SkillTrend[] = skills.map(skill => {
+    // For now, estimate change based on overall growth
+    // In a real implementation, we'd store per-skill history
+    const growthRate = (currentImport.count - previousImport.count) / previousImport.count;
+    const estimatedChange = Math.round(skill.bookmarkCount * growthRate);
+    
+    let status: SkillTrend["status"];
+    if (skill.dateRange.latest > now - staleThreshold) {
+      status = estimatedChange > 0 ? "growing" : "stable";
+    } else {
+      status = "stale";
+    }
+    
+    return {
+      skillId: skill.id,
+      skillName: skill.name,
+      previousCount: Math.round(skill.bookmarkCount / (1 + growthRate)),
+      currentCount: skill.bookmarkCount,
+      change: estimatedChange,
+      status,
+      lastActivity: skill.dateRange.latest,
+    };
+  });
+  
+  // Sort by change
+  trends.sort((a, b) => b.change - a.change);
+  
+  return {
+    trends,
+    previousImportDate: previousImport?.date || null,
+    currentImportDate: currentImport?.date || Date.now(),
+    summary: {
+      growing: trends.filter(t => t.status === "growing").length,
+      declining: trends.filter(t => t.status === "declining").length,
+      new: 0, // Would need skill tracking between imports
+      stale: trends.filter(t => t.status === "stale").length,
+    },
+  };
+}

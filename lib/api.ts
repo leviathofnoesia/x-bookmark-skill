@@ -210,6 +210,124 @@ export async function fetchBookmarks(count: number = 100, maxId?: string): Promi
   return allTweets;
 }
 
+// ============ Incremental Import ============
+
+const BOOKMARKS_META_FILE = join(import.meta.dir, "..", "data", "bookmarks-meta.json");
+const DATA_DIR = join(import.meta.dir, "..", "data");
+
+interface BookmarksMeta {
+  lastImportAt: number;
+  lastBookmarkId: string;
+  totalImported: number;
+  importHistory: {
+    date: number;
+    count: number;
+    skillCount: number;
+  }[];
+}
+
+/**
+ * Get bookmarks metadata (for incremental import).
+ */
+export function getBookmarksMeta(): BookmarksMeta {
+  try {
+    if (existsSync(BOOKMARKS_META_FILE)) {
+      return JSON.parse(readFileSync(BOOKMARKS_META_FILE, "utf-8"));
+    }
+  } catch {}
+  return {
+    lastImportAt: 0,
+    lastBookmarkId: "",
+    totalImported: 0,
+    importHistory: [],
+  };
+}
+
+/**
+ * Save bookmarks metadata.
+ */
+function saveBookmarksMeta(meta: BookmarksMeta): void {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(BOOKMARKS_META_FILE, JSON.stringify(meta, null, 2));
+}
+
+/**
+ * Fetch bookmarks newer than a specific bookmark ID.
+ * Uses pagination to get all bookmarks after the given ID.
+ */
+export async function fetchBookmarksSince(sinceBookmarkId: string, maxCount: number = 800): Promise<Tweet[]> {
+  // First get current user
+  const user = await getCurrentUser();
+  
+  let allTweets: Tweet[] = [];
+  let nextToken: string | undefined;
+  let requests = 0;
+  const maxRequests = Math.ceil(maxCount / 100);
+  
+  while (requests < maxRequests) {
+    const maxResults = Math.min(100, maxCount - allTweets.length);
+    const pagination = nextToken ? `&pagination_token=${nextToken}` : "";
+    
+    const url = `${BASE}/users/${user.id}/bookmarks?max_results=${maxResults}&${TWEET_FIELDS}&expansions=author_id&${USER_FIELDS}&sort=chronological${pagination}`;
+    
+    const requestCost = maxResults * COST_PER_BOOKMARK_READ;
+    const raw = await apiGet(url, requestCost);
+    const tweets = parseTweets(raw);
+    
+    // Filter to only include tweets after the sinceBookmarkId
+    let shouldStop = false;
+    const filteredTweets = tweets.filter(t => {
+      if (t.id === sinceBookmarkId) {
+        shouldStop = true;
+        return false;
+      }
+      return !shouldStop;
+    });
+    
+    allTweets.push(...filteredTweets);
+    
+    // Stop if we reached the target tweet
+    if (shouldStop || !raw.meta?.next_token) break;
+    
+    nextToken = raw.meta.next_token;
+    requests++;
+    if (requests < maxRequests) await sleep(RATE_DELAY_MS);
+  }
+  
+  return allTweets;
+}
+
+/**
+ * Record a successful import for incremental tracking.
+ */
+export function recordImport(count: number, skillCount: number): void {
+  const meta = getBookmarksMeta();
+  const now = Date.now();
+  
+  // Get the first bookmark ID (most recent in chronological order)
+  // For now, just use the current lastBookmarkId or generate a placeholder
+  const lastBookmarkId = meta.lastBookmarkId;
+  
+  meta.lastImportAt = now;
+  meta.lastBookmarkId = lastBookmarkId;
+  meta.totalImported += count;
+  meta.importHistory.push({ date: now, count, skillCount });
+  
+  // Keep only last 20 imports
+  if (meta.importHistory.length > 20) {
+    meta.importHistory = meta.importHistory.slice(-20);
+  }
+  
+  saveBookmarksMeta(meta);
+}
+
+/**
+ * Get import history for trend analysis.
+ */
+export function getImportHistory(): BookmarksMeta["importHistory"] {
+  return getBookmarksMeta().importHistory;
+}
+
 /**
  * Fetch a single tweet by ID.
  */

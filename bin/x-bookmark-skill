@@ -33,6 +33,8 @@ const STOPWORDS = new Set([
   "still", "going", "say", "says", "said", "thing", "things", "people", "time",
 ]);
 import * as manager from "../lib/manager.js";
+import * as scheduler from "../lib/scheduler.js";
+import * as recommendations from "../lib/recommendations.js";
 
 // Ensure data directory exists
 if (!existsSync(DATA_DIR)) {
@@ -71,10 +73,87 @@ async function cmdImport() {
   const quick = getFlag("quick"); // Quick mode: max 100 bookmarks
   const quality = getFlag("quality"); // Filter by engagement
   const minLikes = parseInt(getOpt("min-likes") || "0");
+  const sinceLast = getFlag("since-last"); // Incremental import
+  const scheduleOpt = getOpt("schedule"); // daily, weekly
+  
+  // Feature 3: Smart Scheduling
+  if (scheduleOpt) {
+    if (scheduleOpt === "daily" || scheduleOpt === "weekly") {
+      const config = scheduler.setSchedule(scheduleOpt);
+      const next = scheduler.getTimeUntilNextRun();
+      console.log(`📅 Scheduled ${scheduleOpt} imports. Next run in ${next?.human}.`);
+      return;
+    } else {
+      console.error("Invalid schedule. Use: daily or weekly");
+      process.exit(1);
+    }
+  }
+  
+  // Check if scheduled and not time yet
+  if (scheduler.getSchedule().enabled && !force && !scheduler.shouldRun()) {
+    const next = scheduler.getTimeUntilNextRun();
+    console.error(`Scheduled import not due yet. Next run in ${next?.human}. Use --force to run anyway.`);
+    // Don't exit - allow forced runs
+  }
   
   // Quick mode overrides count
   const actualCount = quick ? Math.min(count, 100) : count;
   
+  // Feature 1: Incremental import
+  if (sinceLast) {
+    const meta = api.getBookmarksMeta();
+    if (!meta.lastBookmarkId) {
+      console.error("No previous import found. Run normal import first.");
+      process.exit(1);
+    }
+    
+    console.error(`Fetching bookmarks since last import...`);
+    try {
+      const newTweets = await api.fetchBookmarksSince(meta.lastBookmarkId, actualCount);
+      
+      if (newTweets.length === 0) {
+        console.log("No new bookmarks since last import.");
+        console.error(`📊 0 API requests · est. cost ~$0.00`);
+        return;
+      }
+      
+      // Load existing bookmarks
+      let existingTweets: api.Tweet[] = [];
+      if (existsSync(BOOKMARKS_FILE)) {
+        const cached = JSON.parse(readFileSync(BOOKMARKS_FILE, "utf-8"));
+        existingTweets = cached.tweets || [];
+      }
+      
+      // Merge: new tweets first, then existing (avoiding duplicates)
+      const existingIds = new Set(existingTweets.map(t => t.id));
+      const uniqueNew = newTweets.filter(t => !existingIds.has(t.id));
+      const allTweets = [...uniqueNew, ...existingTweets];
+      
+      // Save merged bookmarks
+      const cacheData = {
+        fetchedAt: Date.now(),
+        count: allTweets.length,
+        tweets: allTweets,
+      };
+      writeFileSync(BOOKMARKS_FILE, JSON.stringify(cacheData, null, 2));
+      
+      // Record import for tracking
+      const skills = await getSkills();
+      api.recordImport(uniqueNew.length, skills.length);
+      
+      console.error(`Fetched ${uniqueNew.length} new bookmarks (${allTweets.length} total).`);
+      
+      // Now process into skills
+      await processSkills(allTweets);
+      
+    } catch (e: any) {
+      console.error(`Error: ${e.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+  
+  // Normal import (existing code)
   // Check cache
   if (!force && existsSync(BOOKMARKS_FILE)) {
     const cached = JSON.parse(readFileSync(BOOKMARKS_FILE, "utf-8"));
@@ -118,11 +197,32 @@ async function cmdImport() {
     
     console.error(`Fetched ${tweets.length} bookmarks.`);
     console.error(`📊 ${usage.requests} API requests · est. cost ~$${usage.estimatedCost.toFixed(2)}`);
+    
+    // Process into skills
+    await processSkills(tweets);
+    
+    // Record import
+    const skills = await getSkills();
+    api.recordImport(tweets.length, skills.length);
+    
     return tweets;
   } catch (e: any) {
     console.error(`Error: ${e.message}`);
     process.exit(1);
   }
+}
+
+// Helper to process tweets into skills
+async function processSkills(tweets: api.Tweet[]): Promise<void> {
+  const bookmarks = cluster.parseBookmarks(tweets);
+  const rawClusters = cluster.clusterByTopics(bookmarks);
+  let skills = skill.buildSkills(rawClusters, bookmarks);
+  skills = skill.buildSkillHierarchy(skills);
+  
+  writeFileSync(SKILLS_FILE, JSON.stringify({
+    generatedAt: Date.now(),
+    skills,
+  }, null, 2));
 }
 
 async function cmdSkills() {
@@ -636,6 +736,148 @@ function getQualityLabel(quality: number): string {
   return "⚠️ Low";
 }
 
+// ============ Feature 2: Skill Trends ============
+
+async function cmdTrends() {
+  const jsonFlag = getFlag("json");
+  
+  const skills = await getSkills();
+  const importHistory = api.getImportHistory();
+  
+  if (importHistory.length < 2) {
+    if (jsonFlag) {
+      console.log(JSON.stringify({ error: "Need at least 2 imports to show trends" }, null, 2));
+    } else {
+      console.log("📊 Not enough import history to show trends.");
+      console.error("Run 'x-bookmark-skill import' at least twice to track trends.");
+    }
+    return;
+  }
+  
+  const trends = skill.calculateTrends(skills, importHistory);
+  
+  if (jsonFlag) {
+    console.log(JSON.stringify(trends, null, 2));
+    return;
+  }
+  
+  // Format as readable output
+  let out = "📊 Skill Trends\n";
+  out += `${"=".repeat(40)}\n\n`;
+  
+  if (trends.previousImportDate) {
+    const prevDate = new Date(trends.previousImportDate).toLocaleDateString();
+    const currDate = new Date(trends.currentImportDate).toLocaleDateString();
+    out += `Since last import: ${prevDate} → ${currDate}\n\n`;
+  }
+  
+  out += `Summary: `;
+  out += `📈 ${trends.summary.growing} growing, `;
+  out += `📉 ${trends.summary.declining} declining, `;
+  out += `💤 ${trends.summary.stale} stale\n\n`;
+  
+  // Show growing skills
+  const growing = trends.trends.filter(t => t.status === "growing");
+  if (growing.length > 0) {
+    out += `📈 Growing Skills:\n`;
+    for (const t of growing.slice(0, 5)) {
+      out += `  + ${t.change}: ${t.skillName} (${t.previousCount} → ${t.currentCount})\n`;
+    }
+    out += "\n";
+  }
+  
+  // Show stale skills
+  const stale = trends.trends.filter(t => t.status === "stale");
+  if (stale.length > 0) {
+    out += `💤 Skills Needing Attention (>30 days stale):\n`;
+    for (const t of stale.slice(0, 5)) {
+      const daysAgo = Math.floor((Date.now() - t.lastActivity) / (24 * 60 * 60 * 1000));
+      out += `  • ${t.skillName} (${daysAgo} days ago)\n`;
+    }
+  }
+  
+  console.log(out);
+}
+
+// ============ Feature 4: Skill Recommendations ============
+
+async function cmdRecommend() {
+  const jsonFlag = getFlag("json");
+  const limit = parseInt(getOpt("limit") || "5");
+  
+  console.error("Analyzing your skills and current trends...");
+  
+  const skills = await getSkills();
+  
+  if (skills.length === 0) {
+    console.error("No skills found. Import bookmarks first.");
+    process.exit(1);
+  }
+  
+  try {
+    const result = await recommendations.getRecommendations(skills, limit);
+    
+    if (jsonFlag) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    
+    // Format output
+    let out = "🎯 Skill Recommendations\n";
+    out += `${"=".repeat(40)}\n\n`;
+    
+    if (result.basedOnSkills.length > 0) {
+      out += `Based on your expertise: ${result.basedOnSkills.join(", ")}\n\n`;
+    }
+    
+    if (result.recommendations.length === 0) {
+      out += "No new recommendations at this time.\n";
+      out += "Your skills are up to date with current trends!";
+    } else {
+      for (let i = 0; i < result.recommendations.length; i++) {
+        const r = result.recommendations[i];
+        const emoji = r.trendStrength > 0.7 ? "🔥" : r.trendStrength > 0.4 ? "💡" : "💤";
+        const curve = r.learningCurve === "beginner" ? "🌱" : 
+                      r.learningCurve === "intermediate" ? "📚" : "🧠";
+        
+        out += `${i + 1}. ${emoji} ${r.topic}\n`;
+        out += `   ${curve} ${r.learningCurve} · Leverages: ${r.basedOnSkill}\n`;
+        out += `   Query: \`${r.suggestedQuery}\`\n\n`;
+      }
+    }
+    
+    console.log(out);
+  } catch (e: any) {
+    console.error(`Error generating recommendations: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+// ============ Feature 3: Smart Scheduling ============
+
+function cmdSchedule() {
+  const sub = args[1];
+  const config = scheduler.getSchedule();
+  
+  if (sub === "cancel" || sub === "stop") {
+    scheduler.cancelSchedule();
+    console.log("📅 Schedule cancelled.");
+    return;
+  }
+  
+  // Show current schedule
+  if (config.enabled) {
+    const next = scheduler.getTimeUntilNextRun();
+    const lastRun = config.lastRunAt ? new Date(config.lastRunAt).toLocaleString() : "never";
+    console.log(`📅 Schedule: ${config.frequency}`);
+    console.log(`   Next run: ${next?.human || "now"}`);
+    console.log(`   Last run: ${lastRun}`);
+  } else {
+    console.log("📅 No schedule configured.");
+    console.error("Use: x-bookmark-skill import --schedule daily|weekly");
+  }
+}
+
 // ============ Phase 3: Skill Management ============
 
 function cmdSkillManage() {
@@ -948,6 +1190,8 @@ Commands:
     --quick                       Quick mode: max 100 bookmarks, cost display
     --quality                     Filter to bookmarks with 10+ likes
     --min-likes N                 Filter to bookmarks with N+ likes
+    --since-last                  Incremental import (only new bookmarks since last import)
+    --schedule daily|weekly      Schedule periodic imports
   
   skills [--level L] [--sort X]   List skills (default: sort by score)
     --level Expert|Specialist|Practitioner|Novice
@@ -975,8 +1219,17 @@ Commands:
     --limit N                     Tweets per query (default: 10)
     --gaps                        Show gap analysis (trending vs bookmarked)
     --save                        Save to ~/clawd/drafts/
-    --update                      Update skills with research metadata
     --json                        JSON output
+  
+  trends                          Show skill trends (needs 2+ imports)
+    --json                        JSON output
+  
+  recommend                       Get skill recommendations based on trends
+    --limit N                     Max recommendations (default: 5)
+    --json                        JSON output
+  
+  schedule                        Show current schedule
+    cancel                        Cancel scheduled imports
   
   skill tag <skill-id> <tag1>     Add custom tags to skill
   skill ignore <keyword>          Ignore keyword in clustering
@@ -1010,8 +1263,11 @@ Cost:
 
 Examples:
   x-bookmark-skill import --count 200 --quality
-  x-bookmark-skill import --quick
+  x-bookmark-skill import --since-last
+  x-bookmark-skill import --schedule daily
   x-bookmark-skill skills --since 30d
+  x-bookmark-skill trends
+  x-bookmark-skill recommend
   x-bookmark-skill deep-dive "machine learning" --save
   x-bookmark-skill skill tag ml-ai python,ml,ai
   x-bookmark-skill analytics --json
@@ -1046,6 +1302,15 @@ async function main() {
       break;
     case "brief":
       await cmdBrief();
+      break;
+    case "trends":
+      await cmdTrends();
+      break;
+    case "recommend":
+      await cmdRecommend();
+      break;
+    case "schedule":
+      cmdSchedule();
       break;
     case "analytics":
       await cmdAnalytics();
