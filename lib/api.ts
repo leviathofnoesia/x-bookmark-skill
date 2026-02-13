@@ -300,13 +300,9 @@ export async function fetchBookmarksSince(sinceBookmarkId: string, maxCount: num
 /**
  * Record a successful import for incremental tracking.
  */
-export function recordImport(count: number, skillCount: number): void {
+export function recordImport(count: number, skillCount: number, lastBookmarkId: string = ""): void {
   const meta = getBookmarksMeta();
   const now = Date.now();
-  
-  // Get the first bookmark ID (most recent in chronological order)
-  // For now, just use the current lastBookmarkId or generate a placeholder
-  const lastBookmarkId = meta.lastBookmarkId;
   
   meta.lastImportAt = now;
   meta.lastBookmarkId = lastBookmarkId;

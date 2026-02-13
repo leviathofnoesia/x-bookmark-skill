@@ -6,6 +6,8 @@
 import * as api from "./api.js";
 import type { Skill } from "./skill.js";
 
+const MAX_RESULTS = 50;  // Match with trendStrength denominator
+
 export interface Recommendation {
   topic: string;
   relevance: number;
@@ -27,31 +29,65 @@ export interface RecommendationsResult {
  */
 export async function getRecommendations(
   skills: Skill[],
-  limit: number = 5
+  limit: number = 5,
+  skipConfirmation: boolean = false
 ): Promise<RecommendationsResult> {
   const recommendations: Recommendation[] = [];
   const skillKeywords = new Set(skills.flatMap(s => s.topKeywords.map(k => k.toLowerCase())));
   const basedOnSkills = skills.filter(s => s.level !== "Novice").slice(0, 3).map(s => s.name);
   
+  // Calculate planned API calls for cost estimation
+  const targetSkills = skills.slice(0, 5);
+  let plannedCalls = 0;
+  for (const skill of targetSkills) {
+    plannedCalls += skill.suggestedQueries?.slice(0, 2).length || 1;
+  }
+  
+  const costEstimate = plannedCalls * 0.50;  // $0.50 per search
+  
+  // Return cost info for CLI to handle confirmation
+  if (!skipConfirmation) {
+    return {
+      recommendations: [],
+      basedOnSkills,
+      generatedAt: Date.now(),
+    };
+  }
+  
   // Search for trending topics related to user's skills
-  for (const skill of skills.slice(0, 5)) {
+  for (const skill of targetSkills) {
     // Use suggested queries to find trending topics
     for (const query of skill.suggestedQueries?.slice(0, 2) || [skill.name]) {
       try {
         const tweets = await api.searchTweets(query, {
-          maxResults: 20,
+          maxResults: MAX_RESULTS,
           quick: true,
           since: "7d",
         });
         
         if (tweets.length === 0) continue;
         
-        // Calculate trend strength based on volume
-        const trendStrength = Math.min(tweets.length / 50, 1);
+        // Calculate trend strength based on volume (aligned with MAX_RESULTS)
+        const trendStrength = Math.min(tweets.length / MAX_RESULTS, 1);
         
-        // Check if this is already in user's skills
-        const isKnown = skillKeywords.has(query.toLowerCase()) || 
-          skillKeywords.has(skill.name.toLowerCase());
+        // Extract hashtags and keywords from tweets to check against known skills
+        const tweetKeywords = new Set<string>();
+        for (const t of tweets) {
+          // Add hashtags
+          for (const tag of t.hashtags || []) {
+            tweetKeywords.add(tag.toLowerCase());
+          }
+          // Add significant words from text (simple extraction)
+          const words = t.text.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+          for (const w of words.slice(0, 10)) {
+            if (/^[a-z0-9]+$/.test(w)) {
+              tweetKeywords.add(w);
+            }
+          }
+        }
+        
+        // Check if extracted keywords are already in user's skills
+        const isKnown = [...tweetKeywords].some(kw => skillKeywords.has(kw));
         
         if (isKnown) continue;
         
@@ -78,6 +114,18 @@ export async function getRecommendations(
     basedOnSkills,
     generatedAt: Date.now(),
   };
+}
+
+/**
+ * Get cost estimate for recommendations (for CLI confirmation).
+ */
+export function estimateCost(skills: Skill[]): number {
+  const targetSkills = skills.slice(0, 5);
+  let plannedCalls = 0;
+  for (const skill of targetSkills) {
+    plannedCalls += skill.suggestedQueries?.slice(0, 2).length || 1;
+  }
+  return plannedCalls * 0.50;
 }
 
 /**

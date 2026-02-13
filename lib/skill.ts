@@ -669,7 +669,7 @@ export interface SkillTrend {
   previousCount: number;
   currentCount: number;
   change: number;
-  status: "growing" | "declining" | "new" | "stale";
+  status: "growing" | "declining" | "new" | "stale" | "stable";
   lastActivity: number;
 }
 
@@ -714,22 +714,43 @@ export function calculateTrends(
   const staleThreshold = 30 * 24 * 60 * 60 * 1000;
   
   const trends: SkillTrend[] = skills.map(skill => {
-    // For now, estimate change based on overall growth
-    // In a real implementation, we'd store per-skill history
-    const growthRate = (currentImport.count - previousImport.count) / previousImport.count;
-    const estimatedChange = Math.round(skill.bookmarkCount * growthRate);
+    // Guard against division by zero
+    let growthRate = 0;
+    let estimatedChange = 0;
+    let previousCount = skill.bookmarkCount;
     
-    let status: SkillTrend["status"];
-    if (skill.dateRange.latest > now - staleThreshold) {
-      status = estimatedChange > 0 ? "growing" : "stable";
+    if (previousImport.count === 0) {
+      // First import or no previous bookmarks
+      if (currentImport.count > 0) {
+        // New bookmarks - this is growth
+        estimatedChange = skill.bookmarkCount;
+        previousCount = 0;
+      }
     } else {
+      // Calculate growth rate
+      growthRate = (currentImport.count - previousImport.count) / previousImport.count;
+      estimatedChange = Math.round(skill.bookmarkCount * growthRate);
+      previousCount = Math.round(skill.bookmarkCount / (1 + growthRate));
+    }
+    
+    // Determine status
+    let status: SkillTrend["status"];
+    if (previousCount === 0 && skill.bookmarkCount > 0) {
+      status = "new";
+    } else if (skill.dateRange.latest <= now - staleThreshold) {
       status = "stale";
+    } else if (estimatedChange > 0) {
+      status = "growing";
+    } else if (estimatedChange < 0) {
+      status = "declining";
+    } else {
+      status = "stable";
     }
     
     return {
       skillId: skill.id,
       skillName: skill.name,
-      previousCount: Math.round(skill.bookmarkCount / (1 + growthRate)),
+      previousCount,
       currentCount: skill.bookmarkCount,
       change: estimatedChange,
       status,
@@ -747,7 +768,7 @@ export function calculateTrends(
     summary: {
       growing: trends.filter(t => t.status === "growing").length,
       declining: trends.filter(t => t.status === "declining").length,
-      new: 0, // Would need skill tracking between imports
+      new: trends.filter(t => t.status === "new").length,
       stale: trends.filter(t => t.status === "stale").length,
     },
   };

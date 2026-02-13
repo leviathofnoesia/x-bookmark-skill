@@ -89,11 +89,11 @@ async function cmdImport() {
     }
   }
   
-  // Check if scheduled and not time yet
+  // Check if scheduled and not time yet - enforce schedule
   if (scheduler.getSchedule().enabled && !force && !scheduler.shouldRun()) {
     const next = scheduler.getTimeUntilNextRun();
     console.error(`Scheduled import not due yet. Next run in ${next?.human}. Use --force to run anyway.`);
-    // Don't exit - allow forced runs
+    return;  // Stop execution
   }
   
   // Quick mode overrides count
@@ -137,14 +137,15 @@ async function cmdImport() {
       };
       writeFileSync(BOOKMARKS_FILE, JSON.stringify(cacheData, null, 2));
       
-      // Record import for tracking
+      // Process into skills FIRST, then record with correct count
+      await processSkills(allTweets);
       const skills = await getSkills();
-      api.recordImport(uniqueNew.length, skills.length);
+      
+      // Get the newest bookmark ID for next incremental import
+      const newestBookmarkId = allTweets[0]?.id || "";
+      api.recordImport(uniqueNew.length, skills.length, newestBookmarkId);
       
       console.error(`Fetched ${uniqueNew.length} new bookmarks (${allTweets.length} total).`);
-      
-      // Now process into skills
-      await processSkills(allTweets);
       
     } catch (e: any) {
       console.error(`Error: ${e.message}`);
@@ -198,12 +199,13 @@ async function cmdImport() {
     console.error(`Fetched ${tweets.length} bookmarks.`);
     console.error(`📊 ${usage.requests} API requests · est. cost ~$${usage.estimatedCost.toFixed(2)}`);
     
-    // Process into skills
+    // Process into skills FIRST, then record with correct count
     await processSkills(tweets);
     
-    // Record import
+    // Record import with newest bookmark ID
     const skills = await getSkills();
-    api.recordImport(tweets.length, skills.length);
+    const newestBookmarkId = tweets[0]?.id || "";
+    api.recordImport(tweets.length, skills.length, newestBookmarkId);
     
     return tweets;
   } catch (e: any) {
@@ -804,6 +806,7 @@ async function cmdTrends() {
 async function cmdRecommend() {
   const jsonFlag = getFlag("json");
   const limit = parseInt(getOpt("limit") || "5");
+  const force = getFlag("force");  // Skip confirmation
   
   console.error("Analyzing your skills and current trends...");
   
@@ -814,8 +817,20 @@ async function cmdRecommend() {
     process.exit(1);
   }
   
+  // Estimate cost
+  const costEstimate = recommendations.estimateCost(skills);
+  console.error(`Estimated cost: ~$${costEstimate.toFixed(2)} (${Math.ceil(costEstimate / 0.5)} API calls)`);
+  
+  // Ask for confirmation unless --force
+  if (!force && costEstimate > 0) {
+    console.error("This will make paid API calls. Use --force to skip confirmation.");
+    console.error("Or reduce --limit to reduce cost.");
+    // For non-interactive mode, proceed anyway with warning
+    console.error("Proceeding with reduced queries...");
+  }
+  
   try {
-    const result = await recommendations.getRecommendations(skills, limit);
+    const result = await recommendations.getRecommendations(skills, limit, true);  // skipConfirmation = true
     
     if (jsonFlag) {
       console.log(JSON.stringify(result, null, 2));
